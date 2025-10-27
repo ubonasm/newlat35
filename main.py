@@ -460,8 +460,13 @@ with tab3:
         # Segment details
         st.subheader("Segment Details")
         
-        for seg in segment_analysis:
-            with st.expander(f"📌 Segment {seg['segment_id']}: {seg['theme']}"):
+        for i, seg in enumerate(segment_analysis):
+            # Get corresponding segment info with start_no and end_no
+            seg_info = segments[i]
+            utterance_range = f"No.{seg_info['start_no']} to No.{seg_info['end_no']}"
+            
+            with st.expander(f"📌 Segment {seg['segment_id']}: {seg['theme']} ({utterance_range})"):
+                st.markdown(f"**Utterance Range:** {utterance_range}")
                 st.markdown(f"**Summary:** {seg['summary']}")
                 st.markdown(f"**Total Words:** {seg['total_words']} | **Unique Words:** {seg['unique_words']}")
                 
