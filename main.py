@@ -9,24 +9,25 @@ import re
 from io import StringIO
 import json
 
-# Groq API (無料枠あり)
+# Groq API (Free tier available)
 import requests
 
-st.set_page_config(page_title="授業分析システム", layout="wide", page_icon="📚")
+st.set_page_config(page_title="Classroom Analysis System", layout="wide", page_icon="📚")
 
-# セッション状態の初期化
+# Initialize session state
 if 'analyzed_data' not in st.session_state:
     st.session_state.analyzed_data = None
 if 'segments' not in st.session_state:
     st.session_state.segments = None
 
 class ClassroomAnalyzer:
-    def __init__(self, custom_dict=None):
+    def __init__(self, custom_dict=None, pos_filter=None):
         self.tokenizer = Tokenizer()
         self.custom_dict = custom_dict or {}
+        self.pos_filter = pos_filter or ['名詞', '動詞', '形容詞']
         
     def load_custom_dictionary(self, dict_df):
-        """ユーザー辞書を読み込む"""
+        """Load user dictionary"""
         custom_dict = {}
         for _, row in dict_df.iterrows():
             word = str(row.iloc[0]).strip()
@@ -35,11 +36,11 @@ class ClassroomAnalyzer:
         return custom_dict
     
     def tokenize_with_custom_dict(self, text):
-        """カスタム辞書を優先して形態素解析"""
+        """Morphological analysis with custom dictionary priority"""
         tokens = []
         remaining_text = text
         
-        # カスタム辞書の語を優先的に検出
+        # Detect custom dictionary words first
         for word in sorted(self.custom_dict.keys(), key=len, reverse=True):
             if word in remaining_text:
                 parts = remaining_text.split(word)
@@ -54,7 +55,7 @@ class ClassroomAnalyzer:
                     new_remaining.append(part)
                 remaining_text = '###CUSTOM###'.join(new_remaining)
         
-        # 残りのテキストを通常の形態素解析
+        # Analyze remaining text with standard morphological analysis
         text_parts = remaining_text.split('###CUSTOM###')
         final_tokens = []
         token_idx = 0
@@ -78,8 +79,20 @@ class ClassroomAnalyzer:
         
         return final_tokens
     
+    def extract_keywords(self, tokens):
+        """Extract keywords based on selected POS"""
+        keywords = []
+        for t in tokens:
+            # Always include custom dictionary words
+            if t['pos'] == 'カスタム':
+                keywords.append(t['surface'])
+            # Check if POS is in filter
+            elif t['pos'] in self.pos_filter:
+                keywords.append(t['surface'])
+        return keywords
+    
     def analyze_speakers(self, df):
-        """話者ごとの発言を分析"""
+        """Analyze utterances by speaker"""
         speaker_analysis = defaultdict(lambda: {'utterances': [], 'word_freq': Counter()})
         
         for _, row in df.iterrows():
@@ -87,7 +100,7 @@ class ClassroomAnalyzer:
             utterance = str(row['Utterance']).strip()
             
             tokens = self.tokenize_with_custom_dict(utterance)
-            words = [t['surface'] for t in tokens if t['pos'] in ['名詞', '動詞', '形容詞', 'カスタム']]
+            words = self.extract_keywords(tokens)
             
             speaker_analysis[speaker]['utterances'].append(utterance)
             speaker_analysis[speaker]['word_freq'].update(words)
@@ -95,13 +108,13 @@ class ClassroomAnalyzer:
         return speaker_analysis
     
     def segment_classroom(self, df, groq_api_key):
-        """AIを使って授業をセグメントに分割"""
-        # 授業記録を結合
+        """Segment classroom using AI"""
+        # Combine classroom records
         full_text = ""
         for idx, row in df.iterrows():
             full_text += f"[{row['No']}] {row['Speaker']}: {row['Utterance']}\n"
         
-        # Groq APIでセグメント分析
+        # Segment analysis with Groq API
         prompt = f"""以下の授業記録を分析し、テーマや内容の変化に基づいて3〜7個のセグメント（意味のあるまとまり）に分けてください。
 各セグメントには以下の情報を含めてください：
 - segment_id: セグメント番号（1から開始）
@@ -139,16 +152,16 @@ JSON形式で出力してください。
                 result = response.json()
                 content = result['choices'][0]['message']['content']
                 
-                # JSONを抽出
+                # Extract JSON
                 json_match = re.search(r'\{.*\}', content, re.DOTALL)
                 if json_match:
                     segments_data = json.loads(json_match.group())
                     return segments_data.get('segments', [])
             
         except Exception as e:
-            st.warning(f"AI分析エラー: {e}. デフォルトセグメント分割を使用します。")
+            st.warning(f"AI analysis error: {e}. Using default segmentation.")
         
-        # フォールバック: 均等分割
+        # Fallback: equal division
         total_rows = len(df)
         segment_size = max(total_rows // 5, 1)
         segments = []
@@ -157,14 +170,14 @@ JSON形式で出力してください。
                 'segment_id': len(segments) + 1,
                 'start_no': int(df.iloc[i]['No']),
                 'end_no': int(df.iloc[min(i + segment_size - 1, total_rows - 1)]['No']),
-                'theme': f'セグメント {len(segments) + 1}',
-                'summary': '自動分割'
+                'theme': f'Segment {len(segments) + 1}',
+                'summary': 'Auto-divided'
             })
         
         return segments
     
     def analyze_segments(self, df, segments):
-        """各セグメントの主要語を分析"""
+        """Analyze key words in each segment"""
         segment_analysis = []
         
         for seg in segments:
@@ -173,7 +186,7 @@ JSON形式で出力してください。
             all_words = []
             for _, row in seg_df.iterrows():
                 tokens = self.tokenize_with_custom_dict(str(row['Utterance']))
-                words = [t['surface'] for t in tokens if t['pos'] in ['名詞', '動詞', '形容詞', 'カスタム'] and len(t['surface']) > 1]
+                words = [w for w in self.extract_keywords(tokens) if len(w) > 1]
                 all_words.extend(words)
             
             word_freq = Counter(all_words)
@@ -191,7 +204,7 @@ JSON形式で出力してください。
         return segment_analysis
     
     def analyze_word_transitions(self, df, segments, segment_analysis):
-        """セグメント間の語の遷移を分析"""
+        """Analyze word transitions between segments"""
         transitions = []
         
         for i in range(len(segment_analysis) - 1):
@@ -201,10 +214,10 @@ JSON形式で出力してください。
             current_words = set([w[0] for w in current_seg['top_words'][:10]])
             next_words = set([w[0] for w in next_seg['top_words'][:10]])
             
-            # 共通語（引き継がれた語）
+            # Common words (carried over)
             common_words = current_words & next_words
             
-            # 影響力スコア
+            # Influence score
             influence_score = len(common_words) / len(current_words) if current_words else 0
             
             transitions.append({
@@ -217,41 +230,65 @@ JSON形式で出力してください。
         return transitions
 
 # Streamlit UI
-st.title("📚 授業分析システム")
-st.markdown("形態素解析とAIを活用した授業記録の分析ツール")
+st.title("📚 Classroom Analysis System")
+st.markdown("Classroom record analysis tool using morphological analysis and AI")
 
-# サイドバー
+# Sidebar
 with st.sidebar:
-    st.header("⚙️ 設定")
+    st.header("⚙️ Settings")
     
-    # Groq APIキー入力
+    # Groq API key input
     groq_api_key = st.text_input(
-        "Groq APIキー（無料）",
+        "Groq API Key (Free)",
         type="password",
-        help="https://console.groq.com でAPIキーを取得できます（無料枠あり）"
+        help="Get your API key at https://console.groq.com (free tier available)"
     )
     
     st.markdown("---")
-    st.markdown("### 📖 使い方")
+    
+    st.subheader("Part-of-Speech Filter")
+    st.markdown("Select which parts of speech to include in analysis:")
+    
+    pos_options = {
+        'Nouns (名詞)': '名詞',
+        'Verbs (動詞)': '動詞',
+        'Adjectives (形容詞)': '形容詞',
+        'Adverbs (副詞)': '副詞',
+        'Others (その他)': 'その他'
+    }
+    
+    selected_pos_labels = st.multiselect(
+        "Select POS to analyze:",
+        options=list(pos_options.keys()),
+        default=['Nouns (名詞)', 'Verbs (動詞)', 'Adjectives (形容詞)'],
+        help="Choose which parts of speech to include in keyword extraction"
+    )
+    
+    # Convert selected labels to Japanese POS tags
+    selected_pos = [pos_options[label] for label in selected_pos_labels]
+    
+    st.markdown("---")
+    st.markdown("### 📖 How to Use")
     st.markdown("""
-    1. Groq APIキーを入力
-    2. 授業記録CSVをアップロード
-    3. （オプション）カスタム辞書をアップロード
-    4. 分析を実行
+    1. Enter your Groq API key
+    2. Upload classroom record CSV
+    3. (Optional) Upload custom dictionary
+    4. Select parts of speech to analyze
+    5. Run analysis
     """)
 
-# メインエリア
-tab1, tab2, tab3, tab4 = st.tabs(["📁 データ読み込み", "👥 話者分析", "📊 セグメント分析", "🔄 語の遷移"])
+# Main area
+tab1, tab2, tab3, tab4 = st.tabs(["📁 Data Loading", "👥 Speaker Analysis", "📊 Segment Analysis", "🔄 Word Transitions"])
 
 with tab1:
-    st.header("データ読み込み")
+    st.header("Data Loading")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("授業記録ファイル")
+        st.subheader("Classroom Record File")
         classroom_file = st.file_uploader(
-            "CSVファイルをアップロード（No, Speaker, Utterance）",
+            "Upload CSV file (No, Speaker, Utterance)",
             type=['csv'],
             key='classroom'
         )
@@ -259,16 +296,16 @@ with tab1:
         if classroom_file:
             try:
                 df = pd.read_csv(classroom_file)
-                st.success(f"✅ {len(df)}行のデータを読み込みました")
+                st.success(f"✅ Loaded {len(df)} rows of data")
                 st.dataframe(df.head(10), use_container_width=True)
             except Exception as e:
-                st.error(f"エラー: {e}")
+                st.error(f"Error: {e}")
                 df = None
     
     with col2:
-        st.subheader("カスタム辞書（オプション）")
+        st.subheader("Custom Dictionary (Optional)")
         dict_file = st.file_uploader(
-            "CSVファイルをアップロード（語, 読み方）",
+            "Upload CSV file (Word, Reading)",
             type=['csv'],
             key='dictionary'
         )
@@ -277,88 +314,94 @@ with tab1:
         if dict_file:
             try:
                 custom_dict_df = pd.read_csv(dict_file, header=None)
-                st.success(f"✅ {len(custom_dict_df)}語の辞書を読み込みました")
+                st.success(f"✅ Loaded dictionary with {len(custom_dict_df)} words")
                 st.dataframe(custom_dict_df.head(10), use_container_width=True)
             except Exception as e:
-                st.error(f"エラー: {e}")
+                st.error(f"Error: {e}")
     
     st.markdown("---")
     
-    if st.button("🚀 分析を開始", type="primary", use_container_width=True):
+    if st.button("🚀 Start Analysis", type="primary", use_container_width=True):
         if not groq_api_key:
-            st.error("Groq APIキーを入力してください")
+            st.error("Please enter your Groq API key")
         elif classroom_file is None:
-            st.error("授業記録ファイルをアップロードしてください")
+            st.error("Please upload a classroom record file")
+        elif not selected_pos:
+            st.error("Please select at least one part of speech")
         else:
-            with st.spinner("分析中..."):
-                # アナライザー初期化
-                analyzer = ClassroomAnalyzer()
+            with st.spinner("Analyzing..."):
+                analyzer = ClassroomAnalyzer(pos_filter=selected_pos)
                 
-                # カスタム辞書読み込み
+                # Load custom dictionary
                 if custom_dict_df is not None:
                     analyzer.custom_dict = analyzer.load_custom_dictionary(custom_dict_df)
-                    st.info(f"カスタム辞書: {len(analyzer.custom_dict)}語を適用")
+                    st.info(f"Custom dictionary: Applied {len(analyzer.custom_dict)} words")
                 
-                # 話者分析
+                # Speaker analysis
                 speaker_analysis = analyzer.analyze_speakers(df)
                 
-                # セグメント分割
+                # Segment division
                 segments = analyzer.segment_classroom(df, groq_api_key)
                 
-                # セグメント分析
+                # Segment analysis
                 segment_analysis = analyzer.analyze_segments(df, segments)
                 
-                # 語の遷移分析
+                # Word transition analysis
                 transitions = analyzer.analyze_word_transitions(df, segments, segment_analysis)
                 
-                # セッション状態に保存
+                # Save to session state
                 st.session_state.analyzed_data = {
                     'df': df,
                     'speaker_analysis': speaker_analysis,
                     'segments': segments,
                     'segment_analysis': segment_analysis,
                     'transitions': transitions,
-                    'analyzer': analyzer
+                    'analyzer': analyzer,
+                    'pos_filter': selected_pos
                 }
                 
-                st.success("✅ 分析が完了しました！他のタブで結果を確認してください。")
+                st.success("✅ Analysis complete! Check other tabs for results.")
 
 with tab2:
-    st.header("👥 話者分析")
+    st.header("👥 Speaker Analysis")
     
     if st.session_state.analyzed_data:
         data = st.session_state.analyzed_data
         speaker_analysis = data['speaker_analysis']
         
-        st.subheader("話者ごとの主張と特徴")
+        st.info(f"**Analyzing POS:** {', '.join(data.get('pos_filter', ['名詞', '動詞', '形容詞']))}")
+        
+        st.subheader("Claims and Characteristics by Speaker")
         
         for speaker, info in speaker_analysis.items():
-            with st.expander(f"🗣️ {speaker} （発言数: {len(info['utterances'])}）"):
-                st.markdown("**主要な語:**")
+            with st.expander(f"🗣️ {speaker} (Utterances: {len(info['utterances'])})"):
+                st.markdown("**Key Words:**")
                 top_words = info['word_freq'].most_common(15)
                 
-                # 語の頻度を棒グラフで表示
+                # Display word frequency as bar chart
                 if top_words:
-                    words_df = pd.DataFrame(top_words, columns=['語', '頻度'])
-                    fig = px.bar(words_df, x='語', y='頻度', title=f'{speaker}の主要語')
+                    words_df = pd.DataFrame(top_words, columns=['Word', 'Frequency'])
+                    fig = px.bar(words_df, x='Word', y='Frequency', title=f'{speaker}\'s Key Words')
                     st.plotly_chart(fig, use_container_width=True, key=f"speaker_chart_{speaker}")
                 
-                st.markdown("**発言例:**")
+                st.markdown("**Sample Utterances:**")
                 for i, utterance in enumerate(info['utterances'][:3], 1):
                     st.markdown(f"{i}. {utterance}")
     else:
-        st.info("まず「データ読み込み」タブで分析を実行してください。")
+        st.info("Please run analysis in the 'Data Loading' tab first.")
 
 with tab3:
-    st.header("📊 セグメント分析")
+    st.header("📊 Segment Analysis")
     
     if st.session_state.analyzed_data:
         data = st.session_state.analyzed_data
         segments = data['segments']
         segment_analysis = data['segment_analysis']
         
-        # セグメント関係図
-        st.subheader("セグメントの流れ")
+        st.info(f"**Analyzing POS:** {', '.join(data.get('pos_filter', ['名詞', '動詞', '形容詞']))}")
+        
+        # Segment relationship diagram
+        st.subheader("Segment Flow")
         
         G = nx.DiGraph()
         for seg in segment_analysis:
@@ -414,57 +457,59 @@ with tab3:
         
         st.plotly_chart(fig, use_container_width=True, key="segment_flow_graph")
         
-        # 各セグメントの詳細
-        st.subheader("各セグメントの詳細")
+        # Segment details
+        st.subheader("Segment Details")
         
         for seg in segment_analysis:
-            with st.expander(f"📌 セグメント {seg['segment_id']}: {seg['theme']}"):
-                st.markdown(f"**要約:** {seg['summary']}")
-                st.markdown(f"**総語数:** {seg['total_words']} | **ユニーク語数:** {seg['unique_words']}")
+            with st.expander(f"📌 Segment {seg['segment_id']}: {seg['theme']}"):
+                st.markdown(f"**Summary:** {seg['summary']}")
+                st.markdown(f"**Total Words:** {seg['total_words']} | **Unique Words:** {seg['unique_words']}")
                 
-                st.markdown("**主要語（上位20語）:**")
-                words_df = pd.DataFrame(seg['top_words'], columns=['語', '頻度'])
+                st.markdown("**Key Words (Top 20):**")
+                words_df = pd.DataFrame(seg['top_words'], columns=['Word', 'Frequency'])
                 
                 col1, col2 = st.columns([2, 1])
                 with col1:
-                    fig = px.bar(words_df.head(10), x='語', y='頻度', 
-                                title=f'セグメント{seg["segment_id"]}の主要語')
+                    fig = px.bar(words_df.head(10), x='Word', y='Frequency', 
+                                title=f'Segment {seg["segment_id"]} Key Words')
                     st.plotly_chart(fig, use_container_width=True, key=f"segment_words_{seg['segment_id']}")
                 
                 with col2:
                     st.dataframe(words_df, use_container_width=True, height=400)
     else:
-        st.info("まず「データ読み込み」タブで分析を実行してください。")
+        st.info("Please run analysis in the 'Data Loading' tab first.")
 
 with tab4:
-    st.header("🔄 語の遷移分析")
+    st.header("🔄 Word Transition Analysis")
     
     if st.session_state.analyzed_data:
         data = st.session_state.analyzed_data
         transitions = data['transitions']
         segment_analysis = data['segment_analysis']
         
-        st.subheader("セグメント間の語の引き継ぎ")
+        st.info(f"**Analyzing POS:** {', '.join(data.get('pos_filter', ['名詞', '動詞', '形容詞']))}")
         
-        # 遷移の可視化
+        st.subheader("Word Carryover Between Segments")
+        
+        # Transition visualization
         for trans in transitions:
             from_seg = segment_analysis[trans['from_segment'] - 1]
             to_seg = segment_analysis[trans['to_segment'] - 1]
             
             influence_pct = trans['influence_score'] * 100
             
-            with st.expander(f"🔀 {from_seg['theme']} → {to_seg['theme']} （影響力: {influence_pct:.1f}%）"):
-                st.markdown(f"**引き継がれた語:** {len(trans['common_words'])}語")
+            with st.expander(f"🔀 {from_seg['theme']} → {to_seg['theme']} (Influence: {influence_pct:.1f}%)"):
+                st.markdown(f"**Carried Over Words:** {len(trans['common_words'])} words")
                 
                 if trans['common_words']:
-                    st.markdown("**共通語:**")
+                    st.markdown("**Common Words:**")
                     st.write(", ".join(trans['common_words']))
                     
-                    # 影響力メーター
+                    # Influence meter
                     fig = go.Figure(go.Indicator(
                         mode="gauge+number",
                         value=influence_pct,
-                        title={'text': "影響力スコア"},
+                        title={'text': "Influence Score"},
                         gauge={'axis': {'range': [None, 100]},
                                'bar': {'color': "darkblue"},
                                'steps': [
@@ -476,10 +521,10 @@ with tab4:
                     fig.update_layout(height=250)
                     st.plotly_chart(fig, use_container_width=True, key=f"influence_gauge_{trans['from_segment']}_{trans['to_segment']}")
                 else:
-                    st.info("共通語が見つかりませんでした。テーマが大きく変化しています。")
+                    st.info("No common words found. Theme has changed significantly.")
         
-        # 全体の遷移マトリックス
-        st.subheader("遷移マトリックス")
+        # Overall transition matrix
+        st.subheader("Transition Matrix")
         
         matrix_data = []
         for trans in transitions:
@@ -492,12 +537,12 @@ with tab4:
         if matrix_data:
             matrix_df = pd.DataFrame(matrix_data)
             fig = px.bar(matrix_df, x='From', y='Score', color='To',
-                        title='セグメント間の影響力スコア',
-                        labels={'Score': '影響力', 'From': '元セグメント'})
+                        title='Influence Score Between Segments',
+                        labels={'Score': 'Influence', 'From': 'Source Segment'})
             st.plotly_chart(fig, use_container_width=True, key="transition_matrix")
     else:
-        st.info("まず「データ読み込み」タブで分析を実行してください。")
+        st.info("Please run analysis in the 'Data Loading' tab first.")
 
-# フッター
+# Footer
 st.markdown("---")
-st.markdown("💡 **ヒント:** Groq APIは無料枠があります。[console.groq.com](https://console.groq.com)で登録してください。")
+st.markdown("💡 **Tip:** Groq API has a free tier. Register at [console.groq.com](https://console.groq.com).")
