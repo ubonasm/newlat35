@@ -554,7 +554,7 @@ with tab3:
                 with col1:
                     fig = px.bar(words_df.head(10), x='Word', y='Frequency', 
                                 title=f'Segment {seg["segment_id"]} Key Words')
-                    st.plotly_chart(fig, use_container_width=True, key=f"segment_words_{seg['segment_id']}')
+                    st.plotly_chart(fig, use_container_width=True, key=f"segment_words_{seg['segment_id']}")
                 
                 with col2:
                     st.dataframe(words_df, use_container_width=True, height=400)
