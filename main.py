@@ -262,7 +262,7 @@ JSON形式で出力してください。
 
 # Streamlit UI
 st.title("📚 Classroom Analysis System")
-st.markdown("Classroom record analysis tool using morphological analysis and AI")
+st.markdown("Transcript Analysis Tool")
 
 # Sidebar
 with st.sidebar:
@@ -301,8 +301,8 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 📖 How to Use")
     st.markdown("""
-    1. Enter your Groq API key
-    2. Upload classroom record CSV
+    1. Enter your Groq API key; visit to https://console.groq.com
+    2. Upload transcript CSV
     3. (Optional) Upload custom dictionary
     4. Select parts of speech to analyze
     5. Run analysis
@@ -317,7 +317,7 @@ with tab1:
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("Classroom Record File")
+        st.subheader("Transcript File")
         classroom_file = st.file_uploader(
             "Upload CSV file (No, Speaker, Utterance)",
             type=['csv'],
@@ -356,7 +356,7 @@ with tab1:
         if not groq_api_key:
             st.error("Please enter your Groq API key")
         elif classroom_file is None:
-            st.error("Please upload a classroom record file")
+            st.error("Please upload a transcript file")
         elif not selected_pos:
             st.error("Please select at least one part of speech")
         else:
