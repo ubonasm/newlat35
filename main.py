@@ -12,7 +12,7 @@ import json
 # Groq API (Free tier available)
 import requests
 
-st.set_page_config(page_title="Classroom Analysis System", layout="wide", page_icon="📚")
+st.set_page_config(page_title="new LAT35; Lesson Analysis System", layout="wide", page_icon="📚")
 
 # Initialize session state
 if 'analyzed_data' not in st.session_state:
@@ -261,7 +261,7 @@ JSON形式で出力してください。
         return transitions
 
 # Streamlit UI
-st.title("📚 Classroom Analysis System")
+st.title("📚 new LAT35; Lesson Analysis System")
 st.markdown("Transcript Analysis Tool")
 
 # Sidebar
