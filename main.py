@@ -157,35 +157,33 @@ Provide the response in JSON format:
         }
     
     def segment_classroom(self, df, groq_api_key):
+        """Segment classroom transcript using AI"""
         total_utterances = len(df)
         first_no = int(df.iloc[0]['No'])
         last_no = int(df.iloc[-1]['No'])
         
-        full_text = ""
-        for idx, row in df.iterrows():
-            full_text += f"[{row['No']}] {row['Speaker']}: {row['Utterance']}\n"
+        # Create a condensed summary of the transcript for AI analysis
+        summary_text = ""
+        step = max(1, total_utterances // 30)  # Sample up to 30 utterances
+        for idx in range(0, total_utterances, step):
+            row = df.iloc[idx]
+            summary_text += f"[{row['No']}] {row['Speaker']}: {row['Utterance']}\n"
         
-        prompt = f"""以下の授業記録を分析し、テーマや内容の変化に基づいて3〜7個のセグメント（意味のあるまとまり）に分けてください。
+        prompt = f"""Analyze this lesson transcript and divide it into 3-7 meaningful segments based on theme and content changes.
 
-重要: 授業記録全体（No.{first_no}からNo.{last_no}まで、合計{total_utterances}発言）を必ず全てカバーしてください。
+Total utterances: {total_utterances} (No.{first_no} to No.{last_no})
 
-各セグメントには以下の情報を含めてください：
-- segment_id: セグメント番号（1から開始）
-- start_no: 開始発言番号
-- end_no: 終了発言番号
-- theme: セグメントのテーマ（20文字以内）
-- summary: セグメントの要約（50文字以内）
+Requirements:
+- First segment must start at No.{first_no}
+- Last segment must end at No.{last_no}
+- No gaps between segments
+- Each segment needs: segment_id, start_no, end_no, theme (max 20 chars), summary (max 50 chars)
 
-最初のセグメントはNo.{first_no}から始まり、最後のセグメントはNo.{last_no}で終わる必要があります。
-セグメント間に隙間がないようにしてください。
+Sample transcript:
+{summary_text}
 
-JSON形式で出力してください。
-
-授業記録:
-{full_text}
-
-出力形式:
-{{"segments": [{{"segment_id": 1, "start_no": {first_no}, "end_no": 5, "theme": "導入", "summary": "授業の目標を説明"}}]}}
+Return JSON format:
+{{"segments": [{{"segment_id": 1, "start_no": {first_no}, "end_no": X, "theme": "Introduction", "summary": "Lesson objectives"}}]}}
 """
         
         try:
@@ -198,28 +196,28 @@ JSON形式で出力してください。
                 json={
                     "model": "llama-3.3-70b-versatile",
                     "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.3,
-                    "max_tokens": 4000
+                    "temperature": 0.5,
+                    "max_tokens": 2000
                 },
-                timeout=60
+                timeout=30
             )
             
             if response.status_code == 200:
                 result = response.json()
                 content = result['choices'][0]['message']['content']
                 
+                # Extract JSON from response
                 json_match = re.search(r'\{.*\}', content, re.DOTALL)
                 if json_match:
                     segments_data = json.loads(json_match.group())
                     segments = segments_data.get('segments', [])
                     
                     if segments:
-                        if segments[0]['start_no'] != first_no:
-                            segments[0]['start_no'] = first_no
+                        # Validate and fix segment boundaries
+                        segments[0]['start_no'] = first_no
+                        segments[-1]['end_no'] = last_no
                         
-                        if segments[-1]['end_no'] != last_no:
-                            segments[-1]['end_no'] = last_no
-                        
+                        # Fill gaps between segments
                         for i in range(len(segments) - 1):
                             if segments[i]['end_no'] + 1 < segments[i+1]['start_no']:
                                 segments[i]['end_no'] = segments[i+1]['start_no'] - 1
@@ -227,23 +225,23 @@ JSON形式で出力してください。
                         return segments
             
         except Exception as e:
-            st.warning(f"AI analysis error: {e}. Using default segmentation.")
+            st.warning(f"AI segmentation failed: {e}. Using automatic segmentation.")
         
-        total_rows = len(df)
-        num_segments = min(5, max(3, total_rows // 20))
-        segment_size = total_rows // num_segments
+        # Fallback: automatic segmentation
+        num_segments = min(5, max(3, total_utterances // 20))
+        segment_size = total_utterances // num_segments
         segments = []
         
         for i in range(num_segments):
             start_idx = i * segment_size
-            end_idx = total_rows - 1 if i == num_segments - 1 else (i + 1) * segment_size - 1
+            end_idx = total_utterances - 1 if i == num_segments - 1 else (i + 1) * segment_size - 1
             
             segments.append({
                 'segment_id': i + 1,
                 'start_no': int(df.iloc[start_idx]['No']),
                 'end_no': int(df.iloc[end_idx]['No']),
                 'theme': f'Segment {i + 1}',
-                'summary': 'Auto-divided segment'
+                'summary': 'Automatically divided segment'
             })
         
         return segments
@@ -540,21 +538,26 @@ with tab3:
         
         for i, seg in enumerate(segment_analysis):
             seg_info = segments[i]
-            utterance_range = f"No.{seg_info['start_no']} to No.{seg_info['end_no']}"
+            start_no = seg_info['start_no']
+            end_no = seg_info['end_no']
+            utterance_range = "No." + str(start_no) + " to No." + str(end_no)
+            segment_id = seg['segment_id']
+            expander_title = "📌 Segment " + str(segment_id) + ": " + seg['theme'] + " (" + utterance_range + ")"
             
-            with st.expander(f"📌 Segment {seg['segment_id']}: {seg['theme']} ({utterance_range})"):
-                st.markdown(f"**Utterance Range:** {utterance_range}")
-                st.markdown(f"**Summary:** {seg['summary']}")
-                st.markdown(f"**Total Words:** {seg['total_words']} | **Unique Words:** {seg['unique_words']}")
+            with st.expander(expander_title):
+                st.markdown("**Utterance Range:** " + utterance_range)
+                st.markdown("**Summary:** " + seg['summary'])
+                st.markdown("**Total Words:** " + str(seg['total_words']) + " | **Unique Words:** " + str(seg['unique_words']))
                 
                 st.markdown("**Key Words (Top 20):**")
                 words_df = pd.DataFrame(seg['top_words'], columns=['Word', 'Frequency'])
                 
                 col1, col2 = st.columns([2, 1])
                 with col1:
-                    fig = px.bar(words_df.head(10), x='Word', y='Frequency', 
-                                title=f'Segment {seg["segment_id"]} Key Words')
-                    st.plotly_chart(fig, use_container_width=True, key=f"segment_words_{seg['segment_id']}")
+                    chart_title = "Segment " + str(segment_id) + " Key Words"
+                    chart_key = "segment_words_" + str(segment_id)
+                    fig = px.bar(words_df.head(10), x='Word', y='Frequency', title=chart_title)
+                    st.plotly_chart(fig, use_container_width=True, key=chart_key)
                 
                 with col2:
                     st.dataframe(words_df, use_container_width=True, height=400)
