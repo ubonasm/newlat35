@@ -158,32 +158,24 @@ Provide the response in JSON format:
     
     def segment_classroom(self, df, groq_api_key):
         """Segment classroom transcript using AI"""
-        total_utterances = len(df)
-        first_no = int(df.iloc[0]['No'])
-        last_no = int(df.iloc[-1]['No'])
+        full_text = ""
+        for _, row in df.iterrows():
+            full_text += f"[{row['No']}] {row['Speaker']}: {row['Utterance']}\n"
         
-        # Create a condensed summary of the transcript for AI analysis
-        summary_text = ""
-        step = max(1, total_utterances // 30)  # Sample up to 30 utterances
-        for idx in range(0, total_utterances, step):
-            row = df.iloc[idx]
-            summary_text += f"[{row['No']}] {row['Speaker']}: {row['Utterance']}\n"
-        
-        prompt = f"""Analyze this lesson transcript and divide it into 3-7 meaningful segments based on theme and content changes.
+        prompt = f"""Analyze this lesson transcript and divide it into 3-7 meaningful segments based on theme, topic, and content changes.
 
-Total utterances: {total_utterances} (No.{first_no} to No.{last_no})
+For each segment, provide:
+- segment_id (number starting from 1)
+- start_no (utterance number where segment starts)
+- end_no (utterance number where segment ends)
+- theme (descriptive name, max 30 characters)
+- summary (brief description, max 60 characters)
 
-Requirements:
-- First segment must start at No.{first_no}
-- Last segment must end at No.{last_no}
-- No gaps between segments
-- Each segment needs: segment_id, start_no, end_no, theme (max 20 chars), summary (max 50 chars)
+Transcript:
+{full_text[:5000]}
 
-Sample transcript:
-{summary_text}
-
-Return JSON format:
-{{"segments": [{{"segment_id": 1, "start_no": {first_no}, "end_no": X, "theme": "Introduction", "summary": "Lesson objectives"}}]}}
+Return ONLY valid JSON in this exact format:
+{{"segments": [{{"segment_id": 1, "start_no": 1, "end_no": 15, "theme": "Introduction and Objectives", "summary": "Teacher introduces lesson goals"}}]}}
 """
         
         try:
@@ -206,31 +198,24 @@ Return JSON format:
                 result = response.json()
                 content = result['choices'][0]['message']['content']
                 
-                # Extract JSON from response
                 json_match = re.search(r'\{.*\}', content, re.DOTALL)
                 if json_match:
                     segments_data = json.loads(json_match.group())
                     segments = segments_data.get('segments', [])
                     
-                    if segments:
-                        # Validate and fix segment boundaries
-                        segments[0]['start_no'] = first_no
-                        segments[-1]['end_no'] = last_no
-                        
-                        # Fill gaps between segments
-                        for i in range(len(segments) - 1):
-                            if segments[i]['end_no'] + 1 < segments[i+1]['start_no']:
-                                segments[i]['end_no'] = segments[i+1]['start_no'] - 1
-                        
+                    if segments and len(segments) > 0:
                         return segments
             
         except Exception as e:
             st.warning(f"AI segmentation failed: {e}. Using automatic segmentation.")
         
-        # Fallback: automatic segmentation
+        # Fallback: automatic segmentation with meaningful structure
+        total_utterances = len(df)
         num_segments = min(5, max(3, total_utterances // 20))
         segment_size = total_utterances // num_segments
         segments = []
+        
+        segment_names = ['Introduction', 'Development', 'Practice', 'Discussion', 'Conclusion']
         
         for i in range(num_segments):
             start_idx = i * segment_size
@@ -240,8 +225,8 @@ Return JSON format:
                 'segment_id': i + 1,
                 'start_no': int(df.iloc[start_idx]['No']),
                 'end_no': int(df.iloc[end_idx]['No']),
-                'theme': f'Segment {i + 1}',
-                'summary': 'Automatically divided segment'
+                'theme': segment_names[i] if i < len(segment_names) else f'Phase {i + 1}',
+                'summary': f'Lesson phase {i + 1}'
             })
         
         return segments
@@ -273,23 +258,27 @@ Return JSON format:
         return segment_analysis
     
     def analyze_word_transitions(self, df, segments, segment_analysis):
+        """Analyze word transitions between segments"""
         transitions = []
         
         for i in range(len(segment_analysis) - 1):
             current_seg = segment_analysis[i]
             next_seg = segment_analysis[i + 1]
             
-            current_words = set([w[0] for w in current_seg['top_words'][:10]])
-            next_words = set([w[0] for w in next_seg['top_words'][:10]])
+            current_words = set([w[0] for w in current_seg['top_words'][:15]])
+            next_words = set([w[0] for w in next_seg['top_words'][:15]])
             
             common_words = current_words & next_words
             
-            influence_score = len(common_words) / len(current_words) if current_words else 0
+            if len(current_words) > 0:
+                influence_score = len(common_words) / len(current_words)
+            else:
+                influence_score = 0
             
             transitions.append({
                 'from_segment': current_seg['segment_id'],
                 'to_segment': next_seg['segment_id'],
-                'common_words': list(common_words),
+                'common_words': sorted(list(common_words)),
                 'influence_score': influence_score
             })
         
