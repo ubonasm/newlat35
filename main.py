@@ -162,20 +162,22 @@ Provide the response in JSON format:
         for _, row in df.iterrows():
             full_text += f"[{row['No']}] {row['Speaker']}: {row['Utterance']}\n"
         
-        prompt = f"""Analyze this lesson transcript and divide it into 3-7 meaningful segments based on theme, topic, and content changes.
+        prompt = f"""この授業記録を分析し、テーマや内容の変化に基づいて3〜7個の意味のあるセグメントに分割してください。
 
-For each segment, provide:
-- segment_id (number starting from 1)
-- start_no (utterance number where segment starts)
-- end_no (utterance number where segment ends)
-- theme (descriptive name, max 30 characters)
-- summary (brief description, max 60 characters)
+各セグメントについて以下を提供してください：
+- segment_id（1から始まる番号）
+- start_no（セグメントが始まる発言番号）
+- end_no（セグメントが終わる発言番号）
+- theme（授業記録の実際の言葉を使った説明的な名前、最大30文字）
+- summary（簡潔な説明、最大60文字）
 
-Transcript:
+重要：themeとsummaryは、授業記録に実際に出てくる言葉やフレーズを使って、日本語で記述してください。
+
+授業記録:
 {full_text[:5000]}
 
-Return ONLY valid JSON in this exact format:
-{{"segments": [{{"segment_id": 1, "start_no": 1, "end_no": 15, "theme": "Introduction and Objectives", "summary": "Teacher introduces lesson goals"}}]}}
+以下の正確なJSON形式でのみ返してください：
+{{"segments": [{{"segment_id": 1, "start_no": 1, "end_no": 15, "theme": "導入と目標の確認", "summary": "授業の目標を説明"}}]}}
 """
         
         try:
@@ -215,7 +217,8 @@ Return ONLY valid JSON in this exact format:
         segment_size = total_utterances // num_segments
         segments = []
         
-        segment_names = ['Introduction', 'Development', 'Practice', 'Discussion', 'Conclusion']
+        segment_names = ['導入', '展開', '練習', '議論', 'まとめ']
+        segment_summaries = ['授業の導入部分', '内容の展開', '練習活動', '議論と考察', 'まとめと振り返り']
         
         for i in range(num_segments):
             start_idx = i * segment_size
@@ -225,8 +228,8 @@ Return ONLY valid JSON in this exact format:
                 'segment_id': i + 1,
                 'start_no': int(df.iloc[start_idx]['No']),
                 'end_no': int(df.iloc[end_idx]['No']),
-                'theme': segment_names[i] if i < len(segment_names) else f'Phase {i + 1}',
-                'summary': f'Lesson phase {i + 1}'
+                'theme': segment_names[i] if i < len(segment_names) else f'フェーズ{i + 1}',
+                'summary': segment_summaries[i] if i < len(segment_summaries) else f'授業フェーズ{i + 1}'
             })
         
         return segments
