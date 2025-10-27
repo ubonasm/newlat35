@@ -12,7 +12,7 @@ import json
 # Groq API (Free tier available)
 import requests
 
-st.set_page_config(page_title="new LAT35; Lesson Analysis System", layout="wide", page_icon="📚")
+st.set_page_config(page_title="new LAT35: Lesson Analysis Application", layout="wide", page_icon="📚")
 
 # Initialize session state
 if 'analyzed_data' not in st.session_state:
@@ -107,13 +107,60 @@ class ClassroomAnalyzer:
         
         return speaker_analysis
     
+    def analyze_speaker_claims(self, speaker, utterances, groq_api_key):
+        """Analyze speaker's claims and tendencies using AI"""
+        utterances_text = "\n".join([f"- {u}" for u in utterances[:20]])
+        
+        prompt = f"""Analyze the following utterances by speaker "{speaker}" and provide:
+1. Main claims or positions (what they argue or advocate for)
+2. Overall tendency of their speech (teaching style, questioning pattern, etc.)
+
+Keep the analysis concise (2-3 sentences each) and write in English.
+
+Utterances:
+{utterances_text}
+
+Provide the response in JSON format:
+{{"claims": "...", "tendency": "..."}}
+"""
+        
+        try:
+            response = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {groq_api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.3,
+                    "max_tokens": 500
+                },
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                content = result['choices'][0]['message']['content']
+                
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    analysis = json.loads(json_match.group())
+                    return analysis
+        except Exception as e:
+            pass
+        
+        return {
+            "claims": "Analysis unavailable",
+            "tendency": "Analysis unavailable"
+        }
+    
     def segment_classroom(self, df, groq_api_key):
-        """Segment classroom using AI"""
         total_utterances = len(df)
         first_no = int(df.iloc[0]['No'])
         last_no = int(df.iloc[-1]['No'])
         
-        # Combine classroom records
         full_text = ""
         for idx, row in df.iterrows():
             full_text += f"[{row['No']}] {row['Speaker']}: {row['Utterance']}\n"
@@ -161,25 +208,20 @@ JSON形式で出力してください。
                 result = response.json()
                 content = result['choices'][0]['message']['content']
                 
-                # Extract JSON
                 json_match = re.search(r'\{.*\}', content, re.DOTALL)
                 if json_match:
                     segments_data = json.loads(json_match.group())
                     segments = segments_data.get('segments', [])
                     
                     if segments:
-                        # Ensure first segment starts at first_no
                         if segments[0]['start_no'] != first_no:
                             segments[0]['start_no'] = first_no
                         
-                        # Ensure last segment ends at last_no
                         if segments[-1]['end_no'] != last_no:
                             segments[-1]['end_no'] = last_no
                         
-                        # Fill gaps between segments
                         for i in range(len(segments) - 1):
                             if segments[i]['end_no'] + 1 < segments[i+1]['start_no']:
-                                # Extend current segment to connect with next
                                 segments[i]['end_no'] = segments[i+1]['start_no'] - 1
                         
                         return segments
@@ -188,13 +230,12 @@ JSON形式で出力してください。
             st.warning(f"AI analysis error: {e}. Using default segmentation.")
         
         total_rows = len(df)
-        num_segments = min(5, max(3, total_rows // 20))  # 3-5 segments based on size
+        num_segments = min(5, max(3, total_rows // 20))
         segment_size = total_rows // num_segments
         segments = []
         
         for i in range(num_segments):
             start_idx = i * segment_size
-            # Last segment includes remaining rows
             end_idx = total_rows - 1 if i == num_segments - 1 else (i + 1) * segment_size - 1
             
             segments.append({
@@ -208,7 +249,6 @@ JSON形式で出力してください。
         return segments
     
     def analyze_segments(self, df, segments):
-        """Analyze key words in each segment"""
         segment_analysis = []
         
         for seg in segments:
@@ -235,7 +275,6 @@ JSON形式で出力してください。
         return segment_analysis
     
     def analyze_word_transitions(self, df, segments, segment_analysis):
-        """Analyze word transitions between segments"""
         transitions = []
         
         for i in range(len(segment_analysis) - 1):
@@ -245,10 +284,8 @@ JSON形式で出力してください。
             current_words = set([w[0] for w in current_seg['top_words'][:10]])
             next_words = set([w[0] for w in next_seg['top_words'][:10]])
             
-            # Common words (carried over)
             common_words = current_words & next_words
             
-            # Influence score
             influence_score = len(common_words) / len(current_words) if current_words else 0
             
             transitions.append({
@@ -261,14 +298,13 @@ JSON形式で出力してください。
         return transitions
 
 # Streamlit UI
-st.title("📚 new LAT35; Lesson Analysis System")
-st.markdown("Transcript Analysis Tool")
+st.title("📚 new LAT35: Lesson Analysis Application")
+st.markdown("Lesson transcript analysis tool using morphological analysis and AI")
 
 # Sidebar
 with st.sidebar:
     st.header("⚙️ Settings")
     
-    # Groq API key input
     groq_api_key = st.text_input(
         "Groq API Key (Free)",
         type="password",
@@ -295,14 +331,13 @@ with st.sidebar:
         help="Choose which parts of speech to include in keyword extraction"
     )
     
-    # Convert selected labels to Japanese POS tags
     selected_pos = [pos_options[label] for label in selected_pos_labels]
     
     st.markdown("---")
     st.markdown("### 📖 How to Use")
     st.markdown("""
-    1. Enter your Groq API key; visit to https://console.groq.com
-    2. Upload transcript CSV
+    1. Enter your Groq API key
+    2. Upload lesson transcript CSV
     3. (Optional) Upload custom dictionary
     4. Select parts of speech to analyze
     5. Run analysis
@@ -363,24 +398,25 @@ with tab1:
             with st.spinner("Analyzing..."):
                 analyzer = ClassroomAnalyzer(pos_filter=selected_pos)
                 
-                # Load custom dictionary
                 if custom_dict_df is not None:
                     analyzer.custom_dict = analyzer.load_custom_dictionary(custom_dict_df)
                     st.info(f"Custom dictionary: Applied {len(analyzer.custom_dict)} words")
                 
-                # Speaker analysis
                 speaker_analysis = analyzer.analyze_speakers(df)
                 
-                # Segment division
+                st.info("Analyzing speaker claims and tendencies...")
+                for speaker in speaker_analysis.keys():
+                    utterances = speaker_analysis[speaker]['utterances']
+                    claims_analysis = analyzer.analyze_speaker_claims(speaker, utterances, groq_api_key)
+                    speaker_analysis[speaker]['claims'] = claims_analysis.get('claims', 'Analysis unavailable')
+                    speaker_analysis[speaker]['tendency'] = claims_analysis.get('tendency', 'Analysis unavailable')
+                
                 segments = analyzer.segment_classroom(df, groq_api_key)
                 
-                # Segment analysis
                 segment_analysis = analyzer.analyze_segments(df, segments)
                 
-                # Word transition analysis
                 transitions = analyzer.analyze_word_transitions(df, segments, segment_analysis)
                 
-                # Save to session state
                 st.session_state.analyzed_data = {
                     'df': df,
                     'speaker_analysis': speaker_analysis,
@@ -404,18 +440,31 @@ with tab2:
         
         st.subheader("Claims and Characteristics by Speaker")
         
-        for speaker, info in speaker_analysis.items():
+        sorted_speakers = sorted(
+            speaker_analysis.items(), 
+            key=lambda x: len(x[1]['utterances']), 
+            reverse=True
+        )
+        
+        for speaker, info in sorted_speakers:
             with st.expander(f"🗣️ {speaker} (Utterances: {len(info['utterances'])})"):
-                st.markdown("**Key Words:**")
+                st.markdown("### 📋 Claims and Positions")
+                st.markdown(info.get('claims', 'Analysis unavailable'))
+                
+                st.markdown("### 📊 Overall Tendency")
+                st.markdown(info.get('tendency', 'Analysis unavailable'))
+                
+                st.markdown("---")
+                
+                st.markdown("### 🔑 Key Words")
                 top_words = info['word_freq'].most_common(15)
                 
-                # Display word frequency as bar chart
                 if top_words:
                     words_df = pd.DataFrame(top_words, columns=['Word', 'Frequency'])
                     fig = px.bar(words_df, x='Word', y='Frequency', title=f'{speaker}\'s Key Words')
                     st.plotly_chart(fig, use_container_width=True, key=f"speaker_chart_{speaker}")
                 
-                st.markdown("**Sample Utterances:**")
+                st.markdown("### 💬 Sample Utterances")
                 for i, utterance in enumerate(info['utterances'][:3], 1):
                     st.markdown(f"{i}. {utterance}")
     else:
@@ -431,7 +480,6 @@ with tab3:
         
         st.info(f"**Analyzing POS:** {', '.join(data.get('pos_filter', ['名詞', '動詞', '形容詞']))}")
         
-        # Segment relationship diagram
         st.subheader("Segment Flow")
         
         G = nx.DiGraph()
@@ -488,11 +536,9 @@ with tab3:
         
         st.plotly_chart(fig, use_container_width=True, key="segment_flow_graph")
         
-        # Segment details
         st.subheader("Segment Details")
         
         for i, seg in enumerate(segment_analysis):
-            # Get corresponding segment info with start_no and end_no
             seg_info = segments[i]
             utterance_range = f"No.{seg_info['start_no']} to No.{seg_info['end_no']}"
             
@@ -508,7 +554,7 @@ with tab3:
                 with col1:
                     fig = px.bar(words_df.head(10), x='Word', y='Frequency', 
                                 title=f'Segment {seg["segment_id"]} Key Words')
-                    st.plotly_chart(fig, use_container_width=True, key=f"segment_words_{seg['segment_id']}")
+                    st.plotly_chart(fig, use_container_width=True, key=f"segment_words_{seg["segment_id"]}')
                 
                 with col2:
                     st.dataframe(words_df, use_container_width=True, height=400)
@@ -527,7 +573,6 @@ with tab4:
         
         st.subheader("Word Carryover Between Segments")
         
-        # Transition visualization
         for trans in transitions:
             from_seg = segment_analysis[trans['from_segment'] - 1]
             to_seg = segment_analysis[trans['to_segment'] - 1]
@@ -541,7 +586,6 @@ with tab4:
                     st.markdown("**Common Words:**")
                     st.write(", ".join(trans['common_words']))
                     
-                    # Influence meter
                     fig = go.Figure(go.Indicator(
                         mode="gauge+number",
                         value=influence_pct,
@@ -559,7 +603,6 @@ with tab4:
                 else:
                     st.info("No common words found. Theme has changed significantly.")
         
-        # Overall transition matrix
         st.subheader("Transition Matrix")
         
         matrix_data = []
@@ -579,6 +622,5 @@ with tab4:
     else:
         st.info("Please run analysis in the 'Data Loading' tab first.")
 
-# Footer
 st.markdown("---")
 st.markdown("💡 **Tip:** Groq API has a free tier. Register at [console.groq.com](https://console.groq.com).")
