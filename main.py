@@ -12,7 +12,7 @@ import json
 # Groq API (Free tier available)
 import requests
 
-st.set_page_config(page_title="new LAT35: Lesson Analysis Application", layout="wide", page_icon="📚")
+st.set_page_config(page_title="Classroom Analysis System", layout="wide", page_icon="📚")
 
 # Initialize session state
 if 'analyzed_data' not in st.session_state:
@@ -107,21 +107,38 @@ class ClassroomAnalyzer:
         
         return speaker_analysis
     
-    def analyze_speaker_claims(self, speaker, utterances, groq_api_key):
-        """Analyze speaker's claims and tendencies using AI"""
-        utterances_text = "\n".join([f"- {u}" for u in utterances[:20]])
+    def segment_classroom(self, df, groq_api_key):
+        """Segment classroom using AI"""
+        total_utterances = len(df)
+        first_no = int(df.iloc[0]['No'])
+        last_no = int(df.iloc[-1]['No'])
         
-        prompt = f"""Analyze the following utterances by speaker "{speaker}" and provide:
-1. Main claims or positions (what they argue or advocate for)
-2. Overall tendency of their speech (teaching style, questioning pattern, etc.)
+        # Combine classroom records
+        full_text = ""
+        for idx, row in df.iterrows():
+            full_text += f"[{row['No']}] {row['Speaker']}: {row['Utterance']}\n"
+        
+        prompt = f"""以下の授業記録を分析し、テーマや内容の変化に基づいて3〜7個のセグメント（意味のあるまとまり）に分けてください。
 
-Keep the analysis concise (2-3 sentences each) and write in English.
+重要: 授業記録全体（No.{first_no}からNo.{last_no}まで、合計{total_utterances}発言）を必ず全てカバーしてください。
 
-Utterances:
-{utterances_text}
+各セグメントには以下の情報を含めてください：
+- segment_id: セグメント番号（1から開始）
+- start_no: 開始発言番号
+- end_no: 終了発言番号
+- theme: セグメントのテーマ（20文字以内）
+- summary: セグメントの要約（50文字以内）
 
-Provide the response in JSON format:
-{{"claims": "...", "tendency": "..."}}
+最初のセグメントはNo.{first_no}から始まり、最後のセグメントはNo.{last_no}で終わる必要があります。
+セグメント間に隙間がないようにしてください。
+
+JSON形式で出力してください。
+
+授業記録:
+{full_text}
+
+出力形式:
+{{"segments": [{{"segment_id": 1, "start_no": {first_no}, "end_no": 5, "theme": "導入", "summary": "授業の目標を説明"}}]}}
 """
         
         try:
@@ -135,106 +152,63 @@ Provide the response in JSON format:
                     "model": "llama-3.3-70b-versatile",
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.3,
-                    "max_tokens": 500
+                    "max_tokens": 4000
                 },
-                timeout=30
+                timeout=60
             )
             
             if response.status_code == 200:
                 result = response.json()
                 content = result['choices'][0]['message']['content']
                 
-                json_match = re.search(r'\{.*\}', content, re.DOTALL)
-                if json_match:
-                    analysis = json.loads(json_match.group())
-                    return analysis
-        except Exception as e:
-            pass
-        
-        return {
-            "claims": "Analysis unavailable",
-            "tendency": "Analysis unavailable"
-        }
-    
-    def segment_classroom(self, df, groq_api_key):
-        """Segment classroom transcript using AI"""
-        full_text = ""
-        for _, row in df.iterrows():
-            full_text += f"[{row['No']}] {row['Speaker']}: {row['Utterance']}\n"
-        
-        prompt = f"""この授業記録を分析し、テーマや内容の変化に基づいて3〜7個の意味のあるセグメントに分割してください。
-
-各セグメントについて以下を提供してください：
-- segment_id（1から始まる番号）
-- start_no（セグメントが始まる発言番号）
-- end_no（セグメントが終わる発言番号）
-- theme（授業記録の実際の言葉を使った説明的な名前、最大30文字）
-- summary（簡潔な説明、最大60文字）
-
-重要：themeとsummaryは、授業記録に実際に出てくる言葉やフレーズを使って、日本語で記述してください。
-
-授業記録:
-{full_text[:5000]}
-
-以下の正確なJSON形式でのみ返してください：
-{{"segments": [{{"segment_id": 1, "start_no": 1, "end_no": 15, "theme": "導入と目標の確認", "summary": "授業の目標を説明"}}]}}
-"""
-        
-        try:
-            response = requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {groq_api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "llama-3.3-70b-versatile",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.5,
-                    "max_tokens": 2000
-                },
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                content = result['choices'][0]['message']['content']
-                
+                # Extract JSON
                 json_match = re.search(r'\{.*\}', content, re.DOTALL)
                 if json_match:
                     segments_data = json.loads(json_match.group())
                     segments = segments_data.get('segments', [])
                     
-                    if segments and len(segments) > 0:
+                    if segments:
+                        # Ensure first segment starts at first_no
+                        if segments[0]['start_no'] != first_no:
+                            segments[0]['start_no'] = first_no
+                        
+                        # Ensure last segment ends at last_no
+                        if segments[-1]['end_no'] != last_no:
+                            segments[-1]['end_no'] = last_no
+                        
+                        # Fill gaps between segments
+                        for i in range(len(segments) - 1):
+                            if segments[i]['end_no'] + 1 < segments[i+1]['start_no']:
+                                # Extend current segment to connect with next
+                                segments[i]['end_no'] = segments[i+1]['start_no'] - 1
+                        
                         return segments
             
         except Exception as e:
-            st.warning(f"AI segmentation failed: {e}. Using automatic segmentation.")
+            st.warning(f"AI analysis error: {e}. Using default segmentation.")
         
-        # Fallback: automatic segmentation with meaningful structure
-        total_utterances = len(df)
-        num_segments = min(5, max(3, total_utterances // 20))
-        segment_size = total_utterances // num_segments
+        total_rows = len(df)
+        num_segments = min(5, max(3, total_rows // 20))  # 3-5 segments based on size
+        segment_size = total_rows // num_segments
         segments = []
-        
-        segment_names = ['導入', '展開', '練習', '議論', 'まとめ']
-        segment_summaries = ['授業の導入部分', '内容の展開', '練習活動', '議論と考察', 'まとめと振り返り']
         
         for i in range(num_segments):
             start_idx = i * segment_size
-            end_idx = total_utterances - 1 if i == num_segments - 1 else (i + 1) * segment_size - 1
+            # Last segment includes remaining rows
+            end_idx = total_rows - 1 if i == num_segments - 1 else (i + 1) * segment_size - 1
             
             segments.append({
                 'segment_id': i + 1,
                 'start_no': int(df.iloc[start_idx]['No']),
                 'end_no': int(df.iloc[end_idx]['No']),
-                'theme': segment_names[i] if i < len(segment_names) else f'フェーズ{i + 1}',
-                'summary': segment_summaries[i] if i < len(segment_summaries) else f'授業フェーズ{i + 1}'
+                'theme': f'Segment {i + 1}',
+                'summary': 'Auto-divided segment'
             })
         
         return segments
     
     def analyze_segments(self, df, segments):
+        """Analyze key words in each segment"""
         segment_analysis = []
         
         for seg in segments:
@@ -268,33 +242,33 @@ Provide the response in JSON format:
             current_seg = segment_analysis[i]
             next_seg = segment_analysis[i + 1]
             
-            current_words = set([w[0] for w in current_seg['top_words'][:15]])
-            next_words = set([w[0] for w in next_seg['top_words'][:15]])
+            current_words = set([w[0] for w in current_seg['top_words'][:10]])
+            next_words = set([w[0] for w in next_seg['top_words'][:10]])
             
+            # Common words (carried over)
             common_words = current_words & next_words
             
-            if len(current_words) > 0:
-                influence_score = len(common_words) / len(current_words)
-            else:
-                influence_score = 0
+            # Influence score
+            influence_score = len(common_words) / len(current_words) if current_words else 0
             
             transitions.append({
                 'from_segment': current_seg['segment_id'],
                 'to_segment': next_seg['segment_id'],
-                'common_words': sorted(list(common_words)),
+                'common_words': list(common_words),
                 'influence_score': influence_score
             })
         
         return transitions
 
 # Streamlit UI
-st.title("📚 new LAT35: Lesson Analysis Application")
-st.markdown("Lesson transcript analysis tool using morphological analysis and AI")
+st.title("📚 Classroom Analysis System")
+st.markdown("Classroom record analysis tool using morphological analysis and AI")
 
 # Sidebar
 with st.sidebar:
     st.header("⚙️ Settings")
     
+    # Groq API key input
     groq_api_key = st.text_input(
         "Groq API Key (Free)",
         type="password",
@@ -321,13 +295,14 @@ with st.sidebar:
         help="Choose which parts of speech to include in keyword extraction"
     )
     
+    # Convert selected labels to Japanese POS tags
     selected_pos = [pos_options[label] for label in selected_pos_labels]
     
     st.markdown("---")
     st.markdown("### 📖 How to Use")
     st.markdown("""
     1. Enter your Groq API key
-    2. Upload lesson transcript CSV
+    2. Upload classroom record CSV
     3. (Optional) Upload custom dictionary
     4. Select parts of speech to analyze
     5. Run analysis
@@ -342,7 +317,7 @@ with tab1:
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("Transcript File")
+        st.subheader("Classroom Record File")
         classroom_file = st.file_uploader(
             "Upload CSV file (No, Speaker, Utterance)",
             type=['csv'],
@@ -381,32 +356,31 @@ with tab1:
         if not groq_api_key:
             st.error("Please enter your Groq API key")
         elif classroom_file is None:
-            st.error("Please upload a transcript file")
+            st.error("Please upload a classroom record file")
         elif not selected_pos:
             st.error("Please select at least one part of speech")
         else:
             with st.spinner("Analyzing..."):
                 analyzer = ClassroomAnalyzer(pos_filter=selected_pos)
                 
+                # Load custom dictionary
                 if custom_dict_df is not None:
                     analyzer.custom_dict = analyzer.load_custom_dictionary(custom_dict_df)
                     st.info(f"Custom dictionary: Applied {len(analyzer.custom_dict)} words")
                 
+                # Speaker analysis
                 speaker_analysis = analyzer.analyze_speakers(df)
                 
-                st.info("Analyzing speaker claims and tendencies...")
-                for speaker in speaker_analysis.keys():
-                    utterances = speaker_analysis[speaker]['utterances']
-                    claims_analysis = analyzer.analyze_speaker_claims(speaker, utterances, groq_api_key)
-                    speaker_analysis[speaker]['claims'] = claims_analysis.get('claims', 'Analysis unavailable')
-                    speaker_analysis[speaker]['tendency'] = claims_analysis.get('tendency', 'Analysis unavailable')
-                
+                # Segment division
                 segments = analyzer.segment_classroom(df, groq_api_key)
                 
+                # Segment analysis
                 segment_analysis = analyzer.analyze_segments(df, segments)
                 
+                # Word transition analysis
                 transitions = analyzer.analyze_word_transitions(df, segments, segment_analysis)
                 
+                # Save to session state
                 st.session_state.analyzed_data = {
                     'df': df,
                     'speaker_analysis': speaker_analysis,
@@ -430,31 +404,18 @@ with tab2:
         
         st.subheader("Claims and Characteristics by Speaker")
         
-        sorted_speakers = sorted(
-            speaker_analysis.items(), 
-            key=lambda x: len(x[1]['utterances']), 
-            reverse=True
-        )
-        
-        for speaker, info in sorted_speakers:
+        for speaker, info in speaker_analysis.items():
             with st.expander(f"🗣️ {speaker} (Utterances: {len(info['utterances'])})"):
-                st.markdown("### 📋 Claims and Positions")
-                st.markdown(info.get('claims', 'Analysis unavailable'))
-                
-                st.markdown("### 📊 Overall Tendency")
-                st.markdown(info.get('tendency', 'Analysis unavailable'))
-                
-                st.markdown("---")
-                
-                st.markdown("### 🔑 Key Words")
+                st.markdown("**Key Words:**")
                 top_words = info['word_freq'].most_common(15)
                 
+                # Display word frequency as bar chart
                 if top_words:
                     words_df = pd.DataFrame(top_words, columns=['Word', 'Frequency'])
                     fig = px.bar(words_df, x='Word', y='Frequency', title=f'{speaker}\'s Key Words')
                     st.plotly_chart(fig, use_container_width=True, key=f"speaker_chart_{speaker}")
                 
-                st.markdown("### 💬 Sample Utterances")
+                st.markdown("**Sample Utterances:**")
                 for i, utterance in enumerate(info['utterances'][:3], 1):
                     st.markdown(f"{i}. {utterance}")
     else:
@@ -470,6 +431,7 @@ with tab3:
         
         st.info(f"**Analyzing POS:** {', '.join(data.get('pos_filter', ['名詞', '動詞', '形容詞']))}")
         
+        # Segment relationship diagram
         st.subheader("Segment Flow")
         
         G = nx.DiGraph()
@@ -526,30 +488,27 @@ with tab3:
         
         st.plotly_chart(fig, use_container_width=True, key="segment_flow_graph")
         
+        # Segment details
         st.subheader("Segment Details")
         
         for i, seg in enumerate(segment_analysis):
+            # Get corresponding segment info with start_no and end_no
             seg_info = segments[i]
-            start_no = seg_info['start_no']
-            end_no = seg_info['end_no']
-            utterance_range = "No." + str(start_no) + " to No." + str(end_no)
-            segment_id = seg['segment_id']
-            expander_title = "📌 Segment " + str(segment_id) + ": " + seg['theme'] + " (" + utterance_range + ")"
+            utterance_range = f"No.{seg_info['start_no']} to No.{seg_info['end_no']}"
             
-            with st.expander(expander_title):
-                st.markdown("**Utterance Range:** " + utterance_range)
-                st.markdown("**Summary:** " + seg['summary'])
-                st.markdown("**Total Words:** " + str(seg['total_words']) + " | **Unique Words:** " + str(seg['unique_words']))
+            with st.expander(f"📌 Segment {seg['segment_id']}: {seg['theme']} ({utterance_range})"):
+                st.markdown(f"**Utterance Range:** {utterance_range}")
+                st.markdown(f"**Summary:** {seg['summary']}")
+                st.markdown(f"**Total Words:** {seg['total_words']} | **Unique Words:** {seg['unique_words']}")
                 
                 st.markdown("**Key Words (Top 20):**")
                 words_df = pd.DataFrame(seg['top_words'], columns=['Word', 'Frequency'])
                 
                 col1, col2 = st.columns([2, 1])
                 with col1:
-                    chart_title = "Segment " + str(segment_id) + " Key Words"
-                    chart_key = "segment_words_" + str(segment_id)
-                    fig = px.bar(words_df.head(10), x='Word', y='Frequency', title=chart_title)
-                    st.plotly_chart(fig, use_container_width=True, key=chart_key)
+                    fig = px.bar(words_df.head(10), x='Word', y='Frequency', 
+                                title=f'Segment {seg["segment_id"]} Key Words')
+                    st.plotly_chart(fig, use_container_width=True, key=f"segment_words_{seg['segment_id']}")
                 
                 with col2:
                     st.dataframe(words_df, use_container_width=True, height=400)
@@ -568,6 +527,7 @@ with tab4:
         
         st.subheader("Word Carryover Between Segments")
         
+        # Transition visualization
         for trans in transitions:
             from_seg = segment_analysis[trans['from_segment'] - 1]
             to_seg = segment_analysis[trans['to_segment'] - 1]
@@ -581,6 +541,7 @@ with tab4:
                     st.markdown("**Common Words:**")
                     st.write(", ".join(trans['common_words']))
                     
+                    # Influence meter
                     fig = go.Figure(go.Indicator(
                         mode="gauge+number",
                         value=influence_pct,
@@ -598,6 +559,7 @@ with tab4:
                 else:
                     st.info("No common words found. Theme has changed significantly.")
         
+        # Overall transition matrix
         st.subheader("Transition Matrix")
         
         matrix_data = []
@@ -617,5 +579,6 @@ with tab4:
     else:
         st.info("Please run analysis in the 'Data Loading' tab first.")
 
+# Footer
 st.markdown("---")
 st.markdown("💡 **Tip:** Groq API has a free tier. Register at [console.groq.com](https://console.groq.com).")
