@@ -109,13 +109,19 @@ class ClassroomAnalyzer:
     
     def segment_classroom(self, df, groq_api_key):
         """Segment classroom using AI"""
+        total_utterances = len(df)
+        first_no = int(df.iloc[0]['No'])
+        last_no = int(df.iloc[-1]['No'])
+        
         # Combine classroom records
         full_text = ""
         for idx, row in df.iterrows():
             full_text += f"[{row['No']}] {row['Speaker']}: {row['Utterance']}\n"
         
-        # Segment analysis with Groq API
         prompt = f"""以下の授業記録を分析し、テーマや内容の変化に基づいて3〜7個のセグメント（意味のあるまとまり）に分けてください。
+
+重要: 授業記録全体（No.{first_no}からNo.{last_no}まで、合計{total_utterances}発言）を必ず全てカバーしてください。
+
 各セグメントには以下の情報を含めてください：
 - segment_id: セグメント番号（1から開始）
 - start_no: 開始発言番号
@@ -123,13 +129,16 @@ class ClassroomAnalyzer:
 - theme: セグメントのテーマ（20文字以内）
 - summary: セグメントの要約（50文字以内）
 
+最初のセグメントはNo.{first_no}から始まり、最後のセグメントはNo.{last_no}で終わる必要があります。
+セグメント間に隙間がないようにしてください。
+
 JSON形式で出力してください。
 
 授業記録:
-{full_text[:3000]}
+{full_text}
 
 出力形式:
-{{"segments": [{{"segment_id": 1, "start_no": 1, "end_no": 5, "theme": "導入", "summary": "授業の目標を説明"}}]}}
+{{"segments": [{{"segment_id": 1, "start_no": {first_no}, "end_no": 5, "theme": "導入", "summary": "授業の目標を説明"}}]}}
 """
         
         try:
@@ -143,9 +152,9 @@ JSON形式で出力してください。
                     "model": "llama-3.3-70b-versatile",
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.3,
-                    "max_tokens": 2000
+                    "max_tokens": 4000
                 },
-                timeout=30
+                timeout=60
             )
             
             if response.status_code == 200:
@@ -156,22 +165,44 @@ JSON形式で出力してください。
                 json_match = re.search(r'\{.*\}', content, re.DOTALL)
                 if json_match:
                     segments_data = json.loads(json_match.group())
-                    return segments_data.get('segments', [])
+                    segments = segments_data.get('segments', [])
+                    
+                    if segments:
+                        # Ensure first segment starts at first_no
+                        if segments[0]['start_no'] != first_no:
+                            segments[0]['start_no'] = first_no
+                        
+                        # Ensure last segment ends at last_no
+                        if segments[-1]['end_no'] != last_no:
+                            segments[-1]['end_no'] = last_no
+                        
+                        # Fill gaps between segments
+                        for i in range(len(segments) - 1):
+                            if segments[i]['end_no'] + 1 < segments[i+1]['start_no']:
+                                # Extend current segment to connect with next
+                                segments[i]['end_no'] = segments[i+1]['start_no'] - 1
+                        
+                        return segments
             
         except Exception as e:
             st.warning(f"AI analysis error: {e}. Using default segmentation.")
         
-        # Fallback: equal division
         total_rows = len(df)
-        segment_size = max(total_rows // 5, 1)
+        num_segments = min(5, max(3, total_rows // 20))  # 3-5 segments based on size
+        segment_size = total_rows // num_segments
         segments = []
-        for i in range(0, total_rows, segment_size):
+        
+        for i in range(num_segments):
+            start_idx = i * segment_size
+            # Last segment includes remaining rows
+            end_idx = total_rows - 1 if i == num_segments - 1 else (i + 1) * segment_size - 1
+            
             segments.append({
-                'segment_id': len(segments) + 1,
-                'start_no': int(df.iloc[i]['No']),
-                'end_no': int(df.iloc[min(i + segment_size - 1, total_rows - 1)]['No']),
-                'theme': f'Segment {len(segments) + 1}',
-                'summary': 'Auto-divided'
+                'segment_id': i + 1,
+                'start_no': int(df.iloc[start_idx]['No']),
+                'end_no': int(df.iloc[end_idx]['No']),
+                'theme': f'Segment {i + 1}',
+                'summary': 'Auto-divided segment'
             })
         
         return segments
