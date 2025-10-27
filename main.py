@@ -341,7 +341,7 @@ with tab2:
                 if top_words:
                     words_df = pd.DataFrame(top_words, columns=['語', '頻度'])
                     fig = px.bar(words_df, x='語', y='頻度', title=f'{speaker}の主要語')
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, use_container_width=True, key=f"speaker_chart_{speaker}")
                 
                 st.markdown("**発言例:**")
                 for i, utterance in enumerate(info['utterances'][:3], 1):
@@ -412,7 +412,7 @@ with tab3:
                            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
                            height=400))
         
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="segment_flow_graph")
         
         # 各セグメントの詳細
         st.subheader("各セグメントの詳細")
@@ -429,7 +429,7 @@ with tab3:
                 with col1:
                     fig = px.bar(words_df.head(10), x='語', y='頻度', 
                                 title=f'セグメント{seg["segment_id"]}の主要語')
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, use_container_width=True, key=f"segment_words_{seg['segment_id']}")
                 
                 with col2:
                     st.dataframe(words_df, use_container_width=True, height=400)
@@ -474,7 +474,7 @@ with tab4:
                                'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': 90}}))
                     
                     fig.update_layout(height=250)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, use_container_width=True, key=f"influence_gauge_{trans['from_segment']}_{trans['to_segment']}")
                 else:
                     st.info("共通語が見つかりませんでした。テーマが大きく変化しています。")
         
@@ -494,7 +494,7 @@ with tab4:
             fig = px.bar(matrix_df, x='From', y='Score', color='To',
                         title='セグメント間の影響力スコア',
                         labels={'Score': '影響力', 'From': '元セグメント'})
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="transition_matrix")
     else:
         st.info("まず「データ読み込み」タブで分析を実行してください。")
 
