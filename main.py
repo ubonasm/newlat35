@@ -107,96 +107,42 @@ class ClassroomAnalyzer:
         
         return speaker_analysis
     
-    def analyze_speaker_claims(self, speaker, utterances, groq_api_key):
-        """Analyze speaker's claims and tendencies using AI"""
-        utterances_text = "\n".join([f"- {u}" for u in utterances[:20]])
-        
-        prompt = f"""Analyze the following utterances by speaker "{speaker}" and provide:
-1. Main claims or positions (what they argue or advocate for)
-2. Overall tendency of their speech (teaching style, questioning pattern, etc.)
-
-Keep the analysis concise (2-3 sentences each) and write in English.
-
-Utterances:
-{utterances_text}
-
-Provide the response in JSON format:
-{{"claims": "...", "tendency": "..."}}
-"""
-        
-        try:
-            response = requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {groq_api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "llama-3.3-70b-versatile",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.3,
-                    "max_tokens": 500
-                },
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                content = result['choices'][0]['message']['content']
-                
-                json_match = re.search(r'\{.*\}', content, re.DOTALL)
-                if json_match:
-                    analysis = json.loads(json_match.group())
-                    return analysis
-        except Exception as e:
-            pass
-        
-        return {
-            "claims": "Analysis unavailable",
-            "tendency": "Analysis unavailable"
-        }
-    
     def segment_classroom(self, df, groq_api_key):
         """Segment classroom transcript using AI"""
         full_text = ""
         for _, row in df.iterrows():
             full_text += f"[{row['No']}] {row['Speaker']}: {row['Utterance']}\n"
         
-        text_to_analyze = full_text[:8000]
+        # Send first 5000 characters for analysis
+        text_to_analyze = full_text[:5000]
         
         total_utterances = len(df)
         last_no = int(df.iloc[-1]['No'])
         
-        prompt = f"""この授業記録を分析し、テーマや内容の変化に基づいて3〜7個の意味のあるセグメントに分割してください。
+        prompt = f"""この授業記録を分析し、内容やテーマの変化に基づいて意味のあるセグメントに分割してください。
 
-重要な指示：
-1. themeは授業記録に実際に出てくる具体的な話題や内容を使って命名してください
-2. 一般的・構造的な名前は絶対に使わないでください
-3. 何について話しているか、何を議論しているかを具体的に記述してください
+重要：
+- themeには授業記録に実際に出てくる具体的な話題を使ってください
+- 「導入」「展開」「まとめ」のような一般的な名前は使わないでください
+- 「Segment 1」のような番号だけの名前も使わないでください
+- 何について話しているか、何を議論しているかを具体的に書いてください
 
-❌ 悪い例（使用禁止）：
-- "Segment 1", "Segment 2"
-- "導入", "展開", "練習", "議論", "まとめ"
-- "授業の開始", "内容の説明"
-
-✅ 良い例（このように具体的に）：
-- "分数の割り算の計算方法の説明"
-- "グループでの文章題の解決"
-- "実験結果についての意見交換"
-- "歴史的背景の確認と質疑応答"
+例：
+- 良い例：「分数の割り算の計算方法」「グループでの問題解決」「実験結果の議論」
+- 悪い例：「導入」「展開」「Segment 1」「授業の開始」
 
 各セグメントについて以下を提供してください：
-- segment_id（1から始まる番号）
-- start_no（セグメントが始まる発言番号）
-- end_no（セグメントが終わる発言番号）
-- theme（授業記録の実際の言葉を使った具体的で説明的な名前、最大40文字）
-- summary（そのセグメントで何が話されているかの具体的な説明、最大80文字）
+- segment_id: 1から始まる番号
+- start_no: 開始発言番号
+- end_no: 終了発言番号  
+- theme: 具体的で説明的な名前（最大40文字）
+- summary: 内容の説明（最大80文字）
 
-授業記録（全{total_utterances}発言、最後の発言番号: {last_no}）:
+授業記録（全{total_utterances}発言）:
 {text_to_analyze}
 
-以下の正確なJSON形式でのみ返してください：
-{{"segments": [{{"segment_id": 1, "start_no": 1, "end_no": 15, "theme": "具体的な話題名", "summary": "具体的な内容の説明"}}]}}
+JSON形式で返してください：
+{{"segments": [{{"segment_id": 1, "start_no": 1, "end_no": 15, "theme": "具体的な話題", "summary": "内容の説明"}}]}}
 """
         
         try:
@@ -225,36 +171,16 @@ Provide the response in JSON format:
                     segments = segments_data.get('segments', [])
                     
                     if segments and len(segments) > 0:
-                        analyzed_end = segments[-1]['end_no']
-                        if analyzed_end < last_no:
-                            remaining_utterances = last_no - analyzed_end
-                            avg_segment_size = analyzed_end // len(segments)
-                            
-                            if remaining_utterances > avg_segment_size:
-                                num_additional = (remaining_utterances + avg_segment_size - 1) // avg_segment_size
-                                current_start = analyzed_end + 1
-                                
-                                for i in range(num_additional):
-                                    segment_id = len(segments) + 1
-                                    end_no = min(current_start + avg_segment_size - 1, last_no)
-                                    if i == num_additional - 1:
-                                        end_no = last_no
-                                    
-                                    segments.append({
-                                        'segment_id': segment_id,
-                                        'start_no': current_start,
-                                        'end_no': end_no,
-                                        'theme': f'後半部分の議論と活動（No.{current_start}-{end_no}）',
-                                        'summary': f'発言{current_start}番から{end_no}番までの内容'
-                                    })
-                                    current_start = end_no + 1
-                            else:
-                                segments[-1]['end_no'] = last_no
+                        last_segment_end = segments[-1]['end_no']
+                        if last_segment_end < last_no:
+                            # Extend the last segment to cover remaining utterances
+                            segments[-1]['end_no'] = last_no
+                            segments[-1]['summary'] += f"（No.{last_segment_end+1}〜{last_no}を含む）"
                         
                         return segments
             
         except Exception as e:
-            st.warning(f"AI segmentation failed: {e}. Using automatic segmentation.")
+            st.warning(f"AI segmentation failed. Using automatic segmentation.")
         
         num_segments = min(5, max(3, total_utterances // 20))
         segment_size = total_utterances // num_segments
@@ -267,22 +193,27 @@ Provide the response in JSON format:
             start_no = int(df.iloc[start_idx]['No'])
             end_no = int(df.iloc[end_idx]['No'])
             
-            if i == 0:
-                theme = f'授業前半の内容（No.{start_no}-{end_no}）'
-                summary = f'発言{start_no}番から{end_no}番までの授業内容'
-            elif i == num_segments - 1:
-                theme = f'授業後半の内容（No.{start_no}-{end_no}）'
-                summary = f'発言{start_no}番から{end_no}番までの授業内容'
+            # Sample some utterances from this segment to create a descriptive name
+            seg_df = df.iloc[start_idx:end_idx+1]
+            sample_text = " ".join(seg_df['Utterance'].head(5).astype(str))
+            
+            # Extract key words from sample
+            tokens = self.tokenize_with_custom_dict(sample_text)
+            words = self.extract_keywords(tokens)
+            word_freq = Counter(words)
+            top_words = [w[0] for w in word_freq.most_common(3)]
+            
+            if top_words:
+                theme = f"{'・'.join(top_words)}に関する議論（No.{start_no}-{end_no}）"
             else:
-                theme = f'授業中盤の内容（No.{start_no}-{end_no}）'
-                summary = f'発言{start_no}番から{end_no}番までの授業内容'
+                theme = f"セグメント{i+1}の内容（No.{start_no}-{end_no}）"
             
             segments.append({
                 'segment_id': i + 1,
                 'start_no': start_no,
                 'end_no': end_no,
                 'theme': theme,
-                'summary': summary
+                'summary': f'発言{start_no}番から{end_no}番までの授業内容'
             })
         
         return segments
@@ -445,24 +376,17 @@ with tab1:
                     analyzer.custom_dict = analyzer.load_custom_dictionary(custom_dict_df)
                     st.info(f"Custom dictionary: Applied {len(analyzer.custom_dict)} words")
                 
-                st.info("Step 1/4: Segmenting classroom transcript...")
-                segments = analyzer.segment_classroom(df, groq_api_key)
-                
-                st.info("Step 2/4: Analyzing segments...")
-                segment_analysis = analyzer.analyze_segments(df, segments)
-                
-                st.info("Step 3/4: Analyzing word transitions...")
-                transitions = analyzer.analyze_word_transitions(df, segments, segment_analysis)
-                
-                st.info("Step 4/4: Analyzing speakers and their claims...")
+                st.info("Step 1/4: Analyzing speakers...")
                 speaker_analysis = analyzer.analyze_speakers(df)
                 
-                # Add AI analysis for each speaker (done last to not affect segmentation)
-                for speaker in speaker_analysis.keys():
-                    utterances = speaker_analysis[speaker]['utterances']
-                    claims_analysis = analyzer.analyze_speaker_claims(speaker, utterances, groq_api_key)
-                    speaker_analysis[speaker]['claims'] = claims_analysis.get('claims', 'Analysis unavailable')
-                    speaker_analysis[speaker]['tendency'] = claims_analysis.get('tendency', 'Analysis unavailable')
+                st.info("Step 2/4: Segmenting classroom transcript...")
+                segments = analyzer.segment_classroom(df, groq_api_key)
+                
+                st.info("Step 3/4: Analyzing segments...")
+                segment_analysis = analyzer.analyze_segments(df, segments)
+                
+                st.info("Step 4/4: Analyzing word transitions...")
+                transitions = analyzer.analyze_word_transitions(df, segments, segment_analysis)
                 
                 st.session_state.analyzed_data = {
                     'df': df,
@@ -485,7 +409,7 @@ with tab2:
         
         st.info(f"**Analyzing POS:** {', '.join(data.get('pos_filter', ['名詞', '動詞', '形容詞']))}")
         
-        st.subheader("Claims and Characteristics by Speaker")
+        st.subheader("Speaker Statistics and Key Words")
         
         sorted_speakers = sorted(
             speaker_analysis.items(), 
@@ -495,14 +419,6 @@ with tab2:
         
         for speaker, info in sorted_speakers:
             with st.expander(f"🗣️ {speaker} (Utterances: {len(info['utterances'])})"):
-                st.markdown("### 📋 Claims and Positions")
-                st.markdown(info.get('claims', 'Analysis unavailable'))
-                
-                st.markdown("### 📊 Overall Tendency")
-                st.markdown(info.get('tendency', 'Analysis unavailable'))
-                
-                st.markdown("---")
-                
                 st.markdown("### 🔑 Key Words")
                 top_words = info['word_freq'].most_common(15)
                 
@@ -512,7 +428,7 @@ with tab2:
                     st.plotly_chart(fig, use_container_width=True, key=f"speaker_chart_{speaker}")
                 
                 st.markdown("### 💬 Sample Utterances")
-                for i, utterance in enumerate(info['utterances'][:3], 1):
+                for i, utterance in enumerate(info['utterances'][:5], 1):
                     st.markdown(f"{i}. {utterance}")
     else:
         st.info("Please run analysis in the 'Data Loading' tab first.")
@@ -525,7 +441,7 @@ with tab3:
         segments = data['segments']
         segment_analysis = data['segment_analysis']
         
-        st.info(f"**Analyzing POS:** {', '.join(data.get('pos_filter', ['名詞', '動詞', '形容���']))}")
+        st.info(f"**Analyzing POS:** {', '.join(data.get('pos_filter', ['名詞', '動詞', '形容詞']))}")
         
         st.subheader("Segment Flow")
         
@@ -589,24 +505,21 @@ with tab3:
             seg_info = segments[i]
             start_no = seg_info['start_no']
             end_no = seg_info['end_no']
-            utterance_range = "No." + str(start_no) + " to No." + str(end_no)
-            segment_id = seg['segment_id']
-            expander_title = "📌 Segment " + str(segment_id) + ": " + seg['theme'] + " (" + utterance_range + ")"
+            utterance_range = f"No.{start_no} to No.{end_no}"
             
-            with st.expander(expander_title):
-                st.markdown("**Utterance Range:** " + utterance_range)
-                st.markdown("**Summary:** " + seg['summary'])
-                st.markdown("**Total Words:** " + str(seg['total_words']) + " | **Unique Words:** " + str(seg['unique_words']))
+            with st.expander(f"📌 Segment {seg['segment_id']}: {seg['theme']} ({utterance_range})"):
+                st.markdown(f"**Utterance Range:** {utterance_range}")
+                st.markdown(f"**Summary:** {seg['summary']}")
+                st.markdown(f"**Total Words:** {seg['total_words']} | **Unique Words:** {seg['unique_words']}")
                 
                 st.markdown("**Key Words (Top 20):**")
                 words_df = pd.DataFrame(seg['top_words'], columns=['Word', 'Frequency'])
                 
                 col1, col2 = st.columns([2, 1])
                 with col1:
-                    chart_title = "Segment " + str(segment_id) + " Key Words"
-                    chart_key = "segment_words_" + str(segment_id)
-                    fig = px.bar(words_df.head(10), x='Word', y='Frequency', title=chart_title)
-                    st.plotly_chart(fig, use_container_width=True, key=chart_key)
+                    fig = px.bar(words_df.head(10), x='Word', y='Frequency', 
+                                title=f'Segment {seg["segment_id"]} Key Words')
+                    st.plotly_chart(fig, use_container_width=True, key=f"segment_words_{seg['segment_id']}")
                 
                 with col2:
                     st.dataframe(words_df, use_container_width=True, height=400)
