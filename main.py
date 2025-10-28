@@ -8,9 +8,8 @@ import networkx as nx
 import re
 from io import StringIO
 import json
-import time  # Added for rate limit delays
+import time
 
-# Groq API (Free tier available)
 import requests
 
 st.set_page_config(page_title="new LAT35: Lesson Analysis Application", layout="wide", page_icon="📚")
@@ -21,41 +20,86 @@ if 'analyzed_data' not in st.session_state:
 if 'segments' not in st.session_state:
     st.session_state.segments = None
 
-def call_groq_api_with_retry(groq_api_key, prompt, max_retries=3):
-    """Call Groq API with exponential backoff retry for rate limits"""
+def call_ai_api_with_retry(provider, api_key, prompt, max_retries=3):
+    """Call AI API with exponential backoff retry for rate limits
+    
+    Args:
+        provider: 'groq', 'gemini', or 'openai'
+        api_key: API key for the selected provider
+        prompt: The prompt to send
+        max_retries: Maximum number of retry attempts
+    
+    Returns:
+        tuple: (response_text, error_message)
+    """
     for attempt in range(max_retries):
         try:
-            response = requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {groq_api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "llama-3.3-70b-versatile",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.5,
-                    "max_tokens": 4000
-                },
-                timeout=45
-            )
-            
-            if response.status_code == 200:
-                return response.json(), None
-            elif response.status_code == 429:
-                # Rate limit hit - wait and retry
-                wait_time = (2 ** attempt) * 2  # Exponential backoff: 2s, 4s, 8s
-                if attempt < max_retries - 1:
-                    st.warning(f"⏳ Rate limit reached. Waiting {wait_time} seconds before retry (attempt {attempt + 1}/{max_retries})...")
-                    time.sleep(wait_time)
-                    continue
-                else:
-                    return None, f"Rate limit exceeded after {max_retries} attempts. Please wait a few minutes and try again."
-            else:
-                return None, f"API request failed with status {response.status_code}: {response.text}"
+            if provider == 'groq':
+                response = requests.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": "llama-3.3-70b-versatile",
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.5,
+                        "max_tokens": 4000
+                    },
+                    timeout=45
+                )
                 
-        except requests.exceptions.Timeout:
-            return None, "Request timed out. Please try again."
+                if response.status_code == 200:
+                    return response.json()['choices'][0]['message']['content'], None
+                elif response.status_code == 429:
+                    wait_time = (2 ** attempt) * 2
+                    if attempt < max_retries - 1:
+                        st.warning(f"⏳ Rate limit reached. Waiting {wait_time} seconds before retry (attempt {attempt + 1}/{max_retries})...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        return None, f"Rate limit exceeded after {max_retries} attempts. Please wait a few minutes and try again, or switch to a different AI provider."
+                else:
+                    return None, f"API request failed with status {response.status_code}: {response.text}"
+            
+            elif provider == 'gemini':
+                import google.generativeai as genai
+                genai.configure(api_key=api_key)
+                model = genai.GenerativeModel('gemini-1.5-flash')
+                
+                response = model.generate_content(prompt)
+                return response.text, None
+            
+            elif provider == 'openai':
+                response = requests.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": "gpt-4o-mini",
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.5,
+                        "max_tokens": 4000
+                    },
+                    timeout=45
+                )
+                
+                if response.status_code == 200:
+                    return response.json()['choices'][0]['message']['content'], None
+                elif response.status_code == 429:
+                    wait_time = (2 ** attempt) * 2
+                    if attempt < max_retries - 1:
+                        st.warning(f"⏳ Rate limit reached. Waiting {wait_time} seconds before retry (attempt {attempt + 1}/{max_retries})...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        return None, f"Rate limit exceeded after {max_retries} attempts. Please wait a few minutes and try again, or switch to a different AI provider."
+                else:
+                    return None, f"API request failed with status {response.status_code}: {response.text}"
+                    
         except Exception as e:
             return None, f"API error: {str(e)}"
     
@@ -81,7 +125,6 @@ class ClassroomAnalyzer:
         tokens = []
         remaining_text = text
         
-        # Detect custom dictionary words first
         for word in sorted(self.custom_dict.keys(), key=len, reverse=True):
             if word in remaining_text:
                 parts = remaining_text.split(word)
@@ -96,7 +139,6 @@ class ClassroomAnalyzer:
                     new_remaining.append(part)
                 remaining_text = '###CUSTOM###'.join(new_remaining)
         
-        # Analyze remaining text with standard morphological analysis
         text_parts = remaining_text.split('###CUSTOM###')
         final_tokens = []
         token_idx = 0
@@ -124,10 +166,8 @@ class ClassroomAnalyzer:
         """Extract keywords based on selected POS"""
         keywords = []
         for t in tokens:
-            # Always include custom dictionary words
             if t['pos'] == 'カスタム':
                 keywords.append(t['surface'])
-            # Check if POS is in filter
             elif t['pos'] in self.pos_filter:
                 keywords.append(t['surface'])
         return keywords
@@ -148,7 +188,7 @@ class ClassroomAnalyzer:
         
         return speaker_analysis
     
-    def segment_classroom(self, df, groq_api_key):
+    def segment_classroom(self, df, provider, api_key):
         """Segment classroom transcript using AI"""
         time.sleep(1)
         
@@ -200,12 +240,10 @@ class ClassroomAnalyzer:
 注意：最後のセグメントのend_noは必ず{last_no}にしてください。
 """
         
-        result, error = call_groq_api_with_retry(groq_api_key, prompt)
+        content, error = call_ai_api_with_retry(provider, api_key, prompt)
         
-        if result:
+        if content:
             try:
-                content = result['choices'][0]['message']['content']
-                
                 json_match = re.search(r'\{.*\}', content, re.DOTALL)
                 if json_match:
                     segments_data = json.loads(json_match.group())
@@ -228,7 +266,7 @@ class ClassroomAnalyzer:
                 st.warning(f"Error parsing AI response: {str(e)}")
         else:
             st.error(f"❌ AI API Error: {error}")
-            st.info("💡 Tip: Groq free tier has rate limits. If you see 429 errors frequently, wait a few minutes between analyses.")
+            st.info(f"💡 Tip: Try switching to a different AI provider if you continue to see rate limit errors.")
         
         st.warning("Using fallback segmentation with content-based naming...")
         num_segments = min(5, max(3, total_utterances // 25))
@@ -332,11 +370,36 @@ st.markdown("Lesson transcript analysis tool using morphological analysis and AI
 with st.sidebar:
     st.header("⚙️ Settings")
     
-    groq_api_key = st.text_input(
-        "Groq API Key (Free)",
-        type="password",
-        help="Get your API key at https://console.groq.com (free tier available)"
+    st.subheader("🤖 AI Provider")
+    ai_provider = st.selectbox(
+        "Select AI Provider:",
+        options=['Groq', 'Gemini', 'OpenAI'],
+        help="Choose which AI service to use for analysis"
     )
+    
+    provider_info = {
+        'Groq': {
+            'url': 'https://console.groq.com',
+            'note': 'Free tier available with rate limits'
+        },
+        'Gemini': {
+            'url': 'https://makersuite.google.com/app/apikey',
+            'note': 'Free tier available'
+        },
+        'OpenAI': {
+            'url': 'https://platform.openai.com/api-keys',
+            'note': 'Paid service with free trial credits'
+        }
+    }
+    
+    api_key = st.text_input(
+        f"{ai_provider} API Key",
+        type="password",
+        help=f"Get your API key at {provider_info[ai_provider]['url']} ({provider_info[ai_provider]['note']})"
+    )
+    
+    st.caption(f"ℹ️ {provider_info[ai_provider]['note']}")
+    st.caption(f"🔗 [Get {ai_provider} API Key]({provider_info[ai_provider]['url']})")
     
     st.markdown("---")
     
@@ -363,11 +426,12 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 📖 How to Use")
     st.markdown("""
-    1. Enter your Groq API key
-    2. Upload lesson transcript CSV
-    3. (Optional) Upload custom dictionary
-    4. Select parts of speech to analyze
-    5. Run analysis
+    1. Select AI provider (Groq/Gemini/OpenAI)
+    2. Enter your API key
+    3. Upload lesson transcript CSV
+    4. (Optional) Upload custom dictionary
+    5. Select parts of speech to analyze
+    6. Run analysis
     """)
 
 # Main area
@@ -415,8 +479,8 @@ with tab1:
     st.markdown("---")
     
     if st.button("🚀 Start Analysis", type="primary", use_container_width=True):
-        if not groq_api_key:
-            st.error("Please enter your Groq API key")
+        if not api_key:
+            st.error(f"Please enter your {ai_provider} API key")
         elif classroom_file is None:
             st.error("Please upload a transcript file")
         elif not selected_pos:
@@ -432,8 +496,8 @@ with tab1:
                 st.info("Step 1/4: Analyzing speakers...")
                 speaker_analysis = analyzer.analyze_speakers(df)
                 
-                st.info("Step 2/4: Segmenting classroom transcript...")
-                segments = analyzer.segment_classroom(df, groq_api_key)
+                st.info(f"Step 2/4: Segmenting classroom transcript using {ai_provider}...")
+                segments = analyzer.segment_classroom(df, ai_provider.lower(), api_key)
                 
                 st.info("Step 3/4: Analyzing segments...")
                 segment_analysis = analyzer.analyze_segments(df, segments)
@@ -448,10 +512,11 @@ with tab1:
                     'segment_analysis': segment_analysis,
                     'transitions': transitions,
                     'analyzer': analyzer,
-                    'pos_filter': selected_pos
+                    'pos_filter': selected_pos,
+                    'ai_provider': ai_provider
                 }
                 
-                st.success("✅ Analysis complete! Check other tabs for results.")
+                st.success(f"✅ Analysis complete using {ai_provider}! Check other tabs for results.")
 
 with tab2:
     st.header("👥 Speaker Analysis")
@@ -641,4 +706,4 @@ with tab4:
         st.info("Please run analysis in the 'Data Loading' tab first.")
 
 st.markdown("---")
-st.markdown("💡 **Tip:** Groq API has a free tier with rate limits. If you encounter 429 errors, wait 1-2 minutes between analyses or get an API key with higher limits at [console.groq.com](https://console.groq.com).")
+st.markdown("💡 **Tip:** All AI providers have rate limits. If you encounter errors, try switching to a different provider or wait a few minutes between analyses.")
