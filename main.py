@@ -8,6 +8,7 @@ import networkx as nx
 import re
 from io import StringIO
 import json
+import time  # Added for rate limit delays
 
 # Groq API (Free tier available)
 import requests
@@ -19,6 +20,46 @@ if 'analyzed_data' not in st.session_state:
     st.session_state.analyzed_data = None
 if 'segments' not in st.session_state:
     st.session_state.segments = None
+
+def call_groq_api_with_retry(groq_api_key, prompt, max_retries=3):
+    """Call Groq API with exponential backoff retry for rate limits"""
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {groq_api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.5,
+                    "max_tokens": 4000
+                },
+                timeout=45
+            )
+            
+            if response.status_code == 200:
+                return response.json(), None
+            elif response.status_code == 429:
+                # Rate limit hit - wait and retry
+                wait_time = (2 ** attempt) * 2  # Exponential backoff: 2s, 4s, 8s
+                if attempt < max_retries - 1:
+                    st.warning(f"⏳ Rate limit reached. Waiting {wait_time} seconds before retry (attempt {attempt + 1}/{max_retries})...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    return None, f"Rate limit exceeded after {max_retries} attempts. Please wait a few minutes and try again."
+            else:
+                return None, f"API request failed with status {response.status_code}: {response.text}"
+                
+        except requests.exceptions.Timeout:
+            return None, "Request timed out. Please try again."
+        except Exception as e:
+            return None, f"API error: {str(e)}"
+    
+    return None, "Max retries exceeded"
 
 class ClassroomAnalyzer:
     def __init__(self, custom_dict=None, pos_filter=None):
@@ -109,6 +150,8 @@ class ClassroomAnalyzer:
     
     def segment_classroom(self, df, groq_api_key):
         """Segment classroom transcript using AI"""
+        time.sleep(1)
+        
         full_text = ""
         for _, row in df.iterrows():
             full_text += f"[{row['No']}] {row['Speaker']}: {row['Utterance']}\n"
@@ -157,24 +200,10 @@ class ClassroomAnalyzer:
 注意：最後のセグメントのend_noは必ず{last_no}にしてください。
 """
         
-        try:
-            response = requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {groq_api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "llama-3.3-70b-versatile",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.5,
-                    "max_tokens": 4000
-                },
-                timeout=45
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
+        result, error = call_groq_api_with_retry(groq_api_key, prompt)
+        
+        if result:
+            try:
                 content = result['choices'][0]['message']['content']
                 
                 json_match = re.search(r'\{.*\}', content, re.DOTALL)
@@ -190,17 +219,18 @@ class ClassroomAnalyzer:
                         for seg in segments:
                             theme_lower = seg['theme'].lower()
                             if any(pattern in theme_lower for pattern in generic_patterns):
-                                st.warning(f"Generic segment name detected: {seg['theme']}")
+                                st.warning(f"⚠️ Generic segment name detected: {seg['theme']}")
                         
                         return segments
                 else:
                     st.warning("Could not find JSON in AI response")
-            else:
-                st.warning(f"API request failed with status {response.status_code}")
-            
-        except Exception as e:
-            st.warning(f"AI segmentation error: {str(e)}. Using content-based fallback.")
+            except Exception as e:
+                st.warning(f"Error parsing AI response: {str(e)}")
+        else:
+            st.error(f"❌ AI API Error: {error}")
+            st.info("💡 Tip: Groq free tier has rate limits. If you see 429 errors frequently, wait a few minutes between analyses.")
         
+        st.warning("Using fallback segmentation with content-based naming...")
         num_segments = min(5, max(3, total_utterances // 25))
         segment_size = total_utterances // num_segments
         segments = []
@@ -611,4 +641,4 @@ with tab4:
         st.info("Please run analysis in the 'Data Loading' tab first.")
 
 st.markdown("---")
-st.markdown("💡 **Tip:** Groq API has a free tier. Register at [console.groq.com](https://console.groq.com).")
+st.markdown("💡 **Tip:** Groq API has a free tier with rate limits. If you encounter 429 errors, wait 1-2 minutes between analyses or get an API key with higher limits at [console.groq.com](https://console.groq.com).")
