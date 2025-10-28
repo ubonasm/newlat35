@@ -113,36 +113,45 @@ class ClassroomAnalyzer:
         for _, row in df.iterrows():
             full_text += f"[{row['No']}] {row['Speaker']}: {row['Utterance']}\n"
         
-        # Send first 5000 characters for analysis
-        text_to_analyze = full_text[:5000]
+        text_to_analyze = full_text[:8000]
         
         total_utterances = len(df)
         last_no = int(df.iloc[-1]['No'])
         
         prompt = f"""この授業記録を分析し、内容やテーマの変化に基づいて意味のあるセグメントに分割してください。
 
-重要：
-- themeには授業記録に実際に出てくる具体的な話題を使ってください
-- 「導入」「展開」「まとめ」のような一般的な名前は使わないでください
-- 「Segment 1」のような番号だけの名前も使わないでください
-- 何について話しているか、何を議論しているかを具体的に書いてください
+重要な指示：
+1. themeには授業記録に実際に出てくる具体的な話題や内容を使ってください
+2. 以下のような名前は絶対に使わないでください：
+   - 「導入」「展開」「まとめ」「練習」などの一般的な構造
+   - 「Segment 1」「セグメント1」などの番号だけの名前
+   - 「授業前半」「授業中盤」「授業後半」などの時間的な区分
+3. 何について話しているか、どんな議論をしているかを具体的に書いてください
+4. 授業記録の中の実際の言葉を使ってください
 
-例：
-- 良い例：「分数の割り算の計算方法」「グループでの問題解決」「実験結果の議論」
-- 悪い例：「導入」「展開」「Segment 1」「授業の開始」
+良い例：
+- 「分数の割り算の計算方法の説明」
+- 「グループでの問題解決活動」
+- 「実験結果についての議論」
+- 「歴史的背景の確認」
+
+悪い例：
+- 「導入」「展開」「まとめ」
+- 「Segment 1」「セグメント1」
+- 「授業前半の内容」「授業中盤の内容」
 
 各セグメントについて以下を提供してください：
 - segment_id: 1から始まる番号
 - start_no: 開始発言番号
-- end_no: 終了発言番号  
-- theme: 具体的で説明的な名前（最大40文字）
-- summary: 内容の説明（最大80文字）
+- end_no: 終了発言番号（最後のセグメントは{last_no}まで）
+- theme: 具体的で説明的な名前（最大50文字、授業の実際の内容を表す）
+- summary: 内容の詳細説明（最大100文字）
 
-授業記録（全{total_utterances}発言）:
+授業記録（全{total_utterances}発言、最後はNo.{last_no}）:
 {text_to_analyze}
 
-JSON形式で返してください：
-{{"segments": [{{"segment_id": 1, "start_no": 1, "end_no": 15, "theme": "具体的な話題", "summary": "内容の説明"}}]}}
+必ずJSON形式で返してください：
+{{"segments": [{{"segment_id": 1, "start_no": 1, "end_no": 20, "theme": "具体的な話題名", "summary": "内容の説明"}}]}}
 """
         
         try:
@@ -155,8 +164,8 @@ JSON形式で返してください：
                 json={
                     "model": "llama-3.3-70b-versatile",
                     "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.5,
-                    "max_tokens": 2000
+                    "temperature": 0.3,  # Lower temperature for more consistent results
+                    "max_tokens": 3000  # Increased token limit for better responses
                 },
                 timeout=30
             )
@@ -173,16 +182,14 @@ JSON形式で返してください：
                     if segments and len(segments) > 0:
                         last_segment_end = segments[-1]['end_no']
                         if last_segment_end < last_no:
-                            # Extend the last segment to cover remaining utterances
                             segments[-1]['end_no'] = last_no
-                            segments[-1]['summary'] += f"（No.{last_segment_end+1}〜{last_no}を含む）"
                         
                         return segments
             
         except Exception as e:
-            st.warning(f"AI segmentation failed. Using automatic segmentation.")
+            st.warning(f"AI segmentation encountered an error: {str(e)}. Using simple segmentation.")
         
-        num_segments = min(5, max(3, total_utterances // 20))
+        num_segments = min(5, max(3, total_utterances // 25))
         segment_size = total_utterances // num_segments
         segments = []
         
@@ -193,27 +200,15 @@ JSON形式で返してください：
             start_no = int(df.iloc[start_idx]['No'])
             end_no = int(df.iloc[end_idx]['No'])
             
-            # Sample some utterances from this segment to create a descriptive name
-            seg_df = df.iloc[start_idx:end_idx+1]
-            sample_text = " ".join(seg_df['Utterance'].head(5).astype(str))
-            
-            # Extract key words from sample
-            tokens = self.tokenize_with_custom_dict(sample_text)
-            words = self.extract_keywords(tokens)
-            word_freq = Counter(words)
-            top_words = [w[0] for w in word_freq.most_common(3)]
-            
-            if top_words:
-                theme = f"{'・'.join(top_words)}に関する議論（No.{start_no}-{end_no}）"
-            else:
-                theme = f"セグメント{i+1}の内容（No.{start_no}-{end_no}）"
+            theme = f"授業内容セグメント{i+1}（発言{start_no}〜{end_no}番）"
+            summary = f"発言番号{start_no}から{end_no}までの授業記録"
             
             segments.append({
                 'segment_id': i + 1,
                 'start_no': start_no,
                 'end_no': end_no,
                 'theme': theme,
-                'summary': f'発言{start_no}番から{end_no}番までの授業内容'
+                'summary': summary
             })
         
         return segments
