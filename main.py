@@ -65,9 +65,9 @@ def call_ai_api_with_retry(provider, api_key, prompt, max_retries=3):
             
             elif provider == 'gemini':
                 #import google.generativeai as genai
-                import google as genai
+                from google import genai
                 genai.configure(api_key=api_key)
-                model = genai.GenerativeModel('gemini-1.5-flash')
+                model = genai.GenerativeModel('gemini-2.5-flash')
                 
                 response = model.generate_content(prompt)
                 return response.text, None
