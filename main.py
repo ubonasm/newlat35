@@ -64,7 +64,8 @@ def call_ai_api_with_retry(provider, api_key, prompt, max_retries=3):
                     return None, f"API request failed with status {response.status_code}: {response.text}"
             
             elif provider == 'gemini':
-                import google.generativeai as genai
+                #import google.generativeai as genai
+                import google as genai
                 genai.configure(api_key=api_key)
                 model = genai.GenerativeModel('gemini-1.5-flash')
                 
