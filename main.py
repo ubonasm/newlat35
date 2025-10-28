@@ -158,11 +158,17 @@ Provide the response in JSON format:
     
     def segment_classroom(self, df, groq_api_key):
         """Segment classroom transcript using AI"""
-        full_text = ""
+        condensed_text = ""
         for _, row in df.iterrows():
-            full_text += f"[{row['No']}] {row['Speaker']}: {row['Utterance']}\n"
+            utterance = str(row['Utterance'])[:100]  # First 100 chars
+            condensed_text += f"[{row['No']}] {row['Speaker']}: {utterance}...\n"
+        
+        total_utterances = len(df)
+        last_no = int(df.iloc[-1]['No'])
         
         prompt = f"""この授業記録を分析し、テーマや内容の変化に基づいて3〜7個の意味のあるセグメントに分割してください。
+
+重要：全ての発言（No.1からNo.{last_no}まで）を必ずカバーしてください。
 
 各セグメントについて以下を提供してください：
 - segment_id（1から始まる番号）
@@ -172,9 +178,10 @@ Provide the response in JSON format:
 - summary（簡潔な説明、最大60文字）
 
 重要：themeとsummaryは、授業記録に実際に出てくる言葉やフレーズを使って、日本語で記述してください。
+最後のセグメントのend_noは必ず{last_no}にしてください。
 
-授業記録:
-{full_text[:5000]}
+授業記録（全{total_utterances}発言）:
+{condensed_text}
 
 以下の正確なJSON形式でのみ返してください：
 {{"segments": [{{"segment_id": 1, "start_no": 1, "end_no": 15, "theme": "導入と目標の確認", "summary": "授業の目標を説明"}}]}}
@@ -206,13 +213,19 @@ Provide the response in JSON format:
                     segments = segments_data.get('segments', [])
                     
                     if segments and len(segments) > 0:
+                        # Ensure last segment covers to the end
+                        segments[-1]['end_no'] = last_no
+                        
+                        # Fill any gaps between segments
+                        for i in range(len(segments) - 1):
+                            if segments[i]['end_no'] < segments[i+1]['start_no'] - 1:
+                                segments[i]['end_no'] = segments[i+1]['start_no'] - 1
+                        
                         return segments
             
         except Exception as e:
             st.warning(f"AI segmentation failed: {e}. Using automatic segmentation.")
         
-        # Fallback: automatic segmentation with meaningful structure
-        total_utterances = len(df)
         num_segments = min(5, max(3, total_utterances // 20))
         segment_size = total_utterances // num_segments
         segments = []
